@@ -1,0 +1,114 @@
+name: Package Build - Orchestrated Multi-Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.2.3)'
+        required: true
+        type: string
+      branch:
+        description: 'Branch to build from'
+        required: true
+        type: choice
+        options:
+          - main
+          - qa
+          - dev
+        default: main
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Dry run - validate without building'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  RELEASE_VERSION: ${{ github.event.inputs.version || '1.0.0' }}
+  PACKAGE_BUILD_WORKFLOW: .github/workflows/package-build.yml
+
+jobs:
+  validate-version:
+    name: Validate Release Version
+    runs-on: [self-hosted, package]
+    outputs:
+      version: ${{ steps.version-check.outputs.version }}
+      is-valid: ${{ steps.version-check.outputs.is-valid }}
+      branch: ${{ steps.version-check.outputs.branch }}
+    steps:
+      - name: Checkout ntis-devops
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate semantic version
+        id: version-check
+        run: |
+          $version = "${{ env.RELEASE_VERSION }}"
+          $branch = "${{ github.event.inputs.branch || 'main' }}"
+          Write-Output "Validating version: $version"
+          Write-Output "Branch: $branch"
+          # Validate semantic version format (x.y.z.w)
+          if ($version -match '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$') {
+            Write-Output "✅ Version format is valid"
+            Write-Output "version=$version" >> $env:GITHUB_OUTPUT
+            Write-Output "is-valid=true" >> $env:GITHUB_OUTPUT
+            Write-Output "branch=$branch" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Error "❌ Invalid version format. Expected: x.y.z.w (e.g., 1.2.3.4)"
+            Write-Output "is-valid=false" >> $env:GITHUB_OUTPUT
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Check if version already exists
+        run: |
+          $version = "${{ env.RELEASE_VERSION }}"
+          $repos = @("ntis-ui", "ntis-platform", "ntis-database-manager")
+          foreach ($repo in $repos) {
+            $repoPath = "d:\source\$repo"
+            if (Test-Path $repoPath) {
+              Set-Location $repoPath
+              $tagExists = git tag -l "v$version"
+              if ($tagExists) {
+                Write-Error "❌ Tag v$version already exists in $repo repository"
+                exit 1
+              }
+            }
+          }
+          Write-Output "✅ Version $version is available for all repositories"
+        shell: pwsh
+
+  build-ntis-ui:
+    name: Build NTIS-UI (Turbopack)
+    needs: validate-version
+    if: needs.validate-version.outputs.is-valid == 'true' && !github.event.inputs.dry_run
+    uses: SthapatyaConsultants/ntis-ui/.github/workflows/package-build.yml@main
+    with:
+      version: ${{ needs.validate-version.outputs.version }}
+      branch: ${{ needs.validate-version.outputs.branch }}
+    secrets: inherit
+
+  build-ntis-platform:
+    name: Build NTIS-Platform (.NET)
+    needs: validate-version
+    if: needs.validate-version.outputs.is-valid == 'true' && !github.event.inputs.dry_run
+    uses: SthapatyaConsultants/ntis-platform/.github/workflows/package-build.yml@main
+    with:
+      version: ${{ needs.validate-version.outputs.version }}
+      branch: ${{ needs.validate-version.outputs.branch }}
+    secrets: inherit
+
+  build-ntis-database-manager:
+    name: Build NTIS-Database-Manager
+    needs: validate-version
+    if: needs.validate-version.outputs.is-valid == 'true' && !github.event.inputs.dry_run
+    uses: SthapatyaConsultants/ntis-database-manager/.github/workflows/package-build.yml@main
+    with:
+      version: ${{ needs.validate-version.outputs.version }}
+      branch: ${{ needs.validate-version.outputs.branch }}
+    secrets: inherit
