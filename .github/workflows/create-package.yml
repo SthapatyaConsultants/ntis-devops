@@ -1,10 +1,10 @@
-name: Package Build - Orchestrated Multi-Environment
+﻿name: Package Build - Orchestrated Multi-Environment
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 1.2.3)'
+        description: 'Release version (e.g., 1.2.3.4)'
         required: true
         type: string
       branch:
@@ -19,7 +19,6 @@ on:
 
 env:
   RELEASE_VERSION: ${{ github.event.inputs.version || '1.0.0' }}
-  PACKAGE_BUILD_WORKFLOW: .github/workflows/package-build.yml
 
 jobs:
   validate-version:
@@ -37,47 +36,87 @@ jobs:
 
       - name: Validate semantic version
         id: version-check
+        shell: pwsh
         run: |
           $version = "${{ env.RELEASE_VERSION }}"
           $branch = "${{ github.event.inputs.branch || 'main' }}"
           Write-Output "Validating version: $version"
           Write-Output "Branch: $branch"
-          # Validate semantic version format (x.y.z.w)
+
           if ($version -match '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$') {
-            Write-Output "✅ Version format is valid"
+            Write-Output "Version format is valid"
             Write-Output "version=$version" >> $env:GITHUB_OUTPUT
             Write-Output "is-valid=true" >> $env:GITHUB_OUTPUT
             Write-Output "branch=$branch" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Error "❌ Invalid version format. Expected: x.y.z.w (e.g., 1.2.3.4)"
+            Write-Error "Invalid version format. Expected: x.y.z.w (e.g., 1.2.3.4)"
             Write-Output "is-valid=false" >> $env:GITHUB_OUTPUT
             exit 1
           }
-        shell: pwsh
 
   build-ntis-ui:
     name: Build NTIS-UI (Turbopack)
     needs: validate-version
-    uses: SthapatyaConsultants/ntis-ui/.github/workflows/package-build.yml@main
-    with:
-      version: ${{ needs.validate-version.outputs.version }}
-      branch: ${{ needs.validate-version.outputs.branch }}
-    secrets: inherit
+    runs-on: [self-hosted, package]
+    steps:
+      - name: Checkout ntis-ui
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          repository: SthapatyaConsultants/ntis-ui
+          ref: ${{ needs.validate-version.outputs.branch }}
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Run ntis-ui package build action
+        uses: ./.github/actions/package-build
+        with:
+          version: ${{ needs.validate-version.outputs.version }}
+          branch: ${{ needs.validate-version.outputs.branch }}
+          branch-env-map: ${{ vars.BRANCH_ENV_MAP }}
+          package-container-name: ${{ vars.PACKAGE_CONTAINER_NAME }}
+          package-connection-string: ${{ secrets.PACKAGE_CONNECTION_STRING }}
 
   build-ntis-platform:
     name: Build NTIS-Platform (.NET)
     needs: validate-version
-    uses: SthapatyaConsultants/ntis-platform/.github/workflows/package-build.yml@main
-    with:
-      version: ${{ needs.validate-version.outputs.version }}
-      branch: ${{ needs.validate-version.outputs.branch }}
-    secrets: inherit
+    runs-on: [self-hosted, package]
+    steps:
+      - name: Checkout ntis-platform
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          repository: SthapatyaConsultants/ntis-platform
+          ref: ${{ needs.validate-version.outputs.branch }}
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Run ntis-platform package build action
+        uses: ./.github/actions/package-build
+        with:
+          version: ${{ needs.validate-version.outputs.version }}
+          branch: ${{ needs.validate-version.outputs.branch }}
+          branch-env-map: ${{ vars.BRANCH_ENV_MAP }}
+          package-container-name: ${{ vars.PACKAGE_CONTAINER_NAME }}
+          package-connection-string: ${{ secrets.PACKAGE_CONNECTION_STRING }}
 
   build-ntis-database-manager:
     name: Build NTIS-Database-Manager
     needs: validate-version
-    uses: SthapatyaConsultants/ntis-database-manager/.github/workflows/package-build.yml@main
-    with:
-      version: ${{ needs.validate-version.outputs.version }}
-      branch: ${{ needs.validate-version.outputs.branch }}
-    secrets: inherit
+    runs-on: [self-hosted, package]
+    steps:
+      - name: Checkout ntis-database-manager
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          repository: SthapatyaConsultants/ntis-database-manager
+          ref: ${{ needs.validate-version.outputs.branch }}
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Run ntis-database-manager package build action
+        uses: ./.github/actions/package-build
+        with:
+          version: ${{ needs.validate-version.outputs.version }}
+          branch: ${{ needs.validate-version.outputs.branch }}
+          branch-env-map: ${{ vars.BRANCH_ENV_MAP }}
+          package-container-name: ${{ vars.PACKAGE_CONTAINER_NAME }}
+          package-connection-string: ${{ secrets.PACKAGE_CONNECTION_STRING }}
+
