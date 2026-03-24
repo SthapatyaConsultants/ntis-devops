@@ -65,7 +65,7 @@ jobs:
         with:
           repository: SthapatyaConsultants/ntis-ui
           ref: ${{ needs.validate-version.outputs.branch }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
       - name: Call ntis-ui package-build workflow
         uses: ./ntis-ui/.github/workflows/package-build.yml
         with:
@@ -83,7 +83,7 @@ jobs:
         with:
           repository: SthapatyaConsultants/ntis-platform
           ref: ${{ needs.validate-version.outputs.branch }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
       - name: Call ntis-platform package-build workflow
         uses: ./ntis-platform/.github/workflows/package-build.yml
         with:
@@ -101,7 +101,7 @@ jobs:
         with:
           repository: SthapatyaConsultants/ntis-database-manager
           ref: ${{ needs.validate-version.outputs.branch }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Call ntis-database-manager package-build workflow
         uses: ./ntis-database-manager/.github/workflows/package-build.yml
