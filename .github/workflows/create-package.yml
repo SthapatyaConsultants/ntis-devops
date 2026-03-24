@@ -67,7 +67,7 @@ jobs:
           ref: ${{ needs.validate-version.outputs.branch }}
           token: ${{ secrets.PAT_TOKEN }}
       - name: Call ntis-ui package-build workflow
-        uses: ./ntis-ui/.github/workflows/package-build.yml
+        uses: ./.github/workflows/package-build.yml
         with:
           version: ${{ needs.validate-version.outputs.version }}
           branch: ${{ needs.validate-version.outputs.branch }}
@@ -85,7 +85,7 @@ jobs:
           ref: ${{ needs.validate-version.outputs.branch }}
           token: ${{ secrets.PAT_TOKEN }}
       - name: Call ntis-platform package-build workflow
-        uses: ./ntis-platform/.github/workflows/package-build.yml
+        uses: ./.github/workflows/package-build.yml
         with:
           version: ${{ needs.validate-version.outputs.version }}
           branch: ${{ needs.validate-version.outputs.branch }}
@@ -104,7 +104,7 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: Call ntis-database-manager package-build workflow
-        uses: ./ntis-database-manager/.github/workflows/package-build.yml
+        uses: ./.github/workflows/package-build.yml
         with:
           version: ${{ needs.validate-version.outputs.version }}
           branch: ${{ needs.validate-version.outputs.branch }}
