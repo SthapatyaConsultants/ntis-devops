@@ -30,7 +30,7 @@ jobs:
       branch: ${{ steps.version-check.outputs.branch }}
     steps:
       - name: Checkout ntis-devops
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -60,7 +60,7 @@ jobs:
     runs-on: [self-hosted, package]
     steps:
       - name: Checkout ntis-ui
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           clean: true
           repository: SthapatyaConsultants/ntis-ui
@@ -82,7 +82,7 @@ jobs:
     runs-on: [self-hosted, package]
     steps:
       - name: Checkout ntis-platform
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           clean: true
           repository: SthapatyaConsultants/ntis-platform
@@ -104,7 +104,7 @@ jobs:
     runs-on: [self-hosted, package]
     steps:
       - name: Checkout ntis-database-manager
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           clean: true
           repository: SthapatyaConsultants/ntis-database-manager
@@ -119,4 +119,5 @@ jobs:
           branch-env-map: ${{ vars.BRANCH_ENV_MAP }}
           package-container-name: ${{ vars.PACKAGE_CONTAINER_NAME }}
           package-connection-string: ${{ secrets.PACKAGE_CONNECTION_STRING }}
+
 
