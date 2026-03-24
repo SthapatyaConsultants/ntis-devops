@@ -72,6 +72,7 @@ jobs:
         with:
           version: ${{ needs.validate-version.outputs.version }}
           branch: ${{ needs.validate-version.outputs.branch }}
+          path-mode: orchestrated
           branch-env-map: ${{ vars.BRANCH_ENV_MAP }}
           package-container-name: ${{ vars.PACKAGE_CONTAINER_NAME }}
           package-connection-string: ${{ secrets.PACKAGE_CONNECTION_STRING }}
@@ -94,6 +95,7 @@ jobs:
         with:
           version: ${{ needs.validate-version.outputs.version }}
           branch: ${{ needs.validate-version.outputs.branch }}
+          path-mode: orchestrated
           branch-env-map: ${{ vars.BRANCH_ENV_MAP }}
           package-container-name: ${{ vars.PACKAGE_CONTAINER_NAME }}
           package-connection-string: ${{ secrets.PACKAGE_CONNECTION_STRING }}
@@ -116,8 +118,7 @@ jobs:
         with:
           version: ${{ needs.validate-version.outputs.version }}
           branch: ${{ needs.validate-version.outputs.branch }}
+          path-mode: orchestrated
           branch-env-map: ${{ vars.BRANCH_ENV_MAP }}
           package-container-name: ${{ vars.PACKAGE_CONTAINER_NAME }}
           package-connection-string: ${{ secrets.PACKAGE_CONNECTION_STRING }}
-
-
