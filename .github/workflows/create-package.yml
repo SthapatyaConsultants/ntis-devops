@@ -58,54 +58,26 @@ jobs:
   build-ntis-ui:
     name: Build NTIS-UI (Turbopack)
     needs: validate-version
-    runs-on: [self-hosted, package]
-    steps:
-      - name: Checkout ntis-ui
-        uses: actions/checkout@v4
-        with:
-          repository: SthapatyaConsultants/ntis-ui
-          ref: ${{ needs.validate-version.outputs.branch }}
-          token: ${{ secrets.PAT_TOKEN }}
-      - name: Call ntis-ui package-build workflow
-        uses: ./.github/workflows/package-build.yml
-        with:
-          version: ${{ needs.validate-version.outputs.version }}
-          branch: ${{ needs.validate-version.outputs.branch }}
-          secrets: inherit
+    uses: SthapatyaConsultants/ntis-ui/.github/workflows/package-build.yml@main
+    with:
+      version: ${{ needs.validate-version.outputs.version }}
+      branch: ${{ needs.validate-version.outputs.branch }}
+    secrets: inherit
 
   build-ntis-platform:
     name: Build NTIS-Platform (.NET)
     needs: validate-version
-    runs-on: [self-hosted, package]
-    steps:
-      - name: Checkout ntis-platform
-        uses: actions/checkout@v4
-        with:
-          repository: SthapatyaConsultants/ntis-platform
-          ref: ${{ needs.validate-version.outputs.branch }}
-          token: ${{ secrets.PAT_TOKEN }}
-      - name: Call ntis-platform package-build workflow
-        uses: ./.github/workflows/package-build.yml
-        with:
-          version: ${{ needs.validate-version.outputs.version }}
-          branch: ${{ needs.validate-version.outputs.branch }}
-          secrets: inherit
+    uses: SthapatyaConsultants/ntis-platform/.github/workflows/package-build.yml@main
+    with:
+      version: ${{ needs.validate-version.outputs.version }}
+      branch: ${{ needs.validate-version.outputs.branch }}
+    secrets: inherit
 
   build-ntis-database-manager:
     name: Build NTIS-Database-Manager
     needs: validate-version
-    runs-on: [self-hosted, package]
-    steps:
-      - name: Checkout ntis-database-manager
-        uses: actions/checkout@v4
-        with:
-          repository: SthapatyaConsultants/ntis-database-manager
-          ref: ${{ needs.validate-version.outputs.branch }}
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: Call ntis-database-manager package-build workflow
-        uses: ./.github/workflows/package-build.yml
-        with:
-          version: ${{ needs.validate-version.outputs.version }}
-          branch: ${{ needs.validate-version.outputs.branch }}
-          secrets: inherit
+    uses: SthapatyaConsultants/ntis-database-manager/.github/workflows/package-build.yml@main
+    with:
+      version: ${{ needs.validate-version.outputs.version }}
+      branch: ${{ needs.validate-version.outputs.branch }}
+    secrets: inherit
