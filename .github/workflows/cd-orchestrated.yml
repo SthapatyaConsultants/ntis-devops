@@ -27,17 +27,21 @@ jobs:
 
     steps:
 
+    # 🔹 1. Environment Info
     - name: Set Environment Config
       shell: powershell
       run: |
         $envName = "${{ github.event.inputs.environment }}"
         Write-Host "Environment selected: $envName"
 
+    # 🔹 2. Prepare directories
     - name: Prepare directories
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "C:\Deploy"
+        New-Item -ItemType Directory -Force -Path "C:\Backup"
 
+    # 🔹 3. Resolve Version (latest or manual)
     - name: Resolve Version
       id: resolve
       shell: powershell
@@ -67,11 +71,17 @@ jobs:
               Sort-Object {[version]$_} -Descending |
               Select-Object -First 1
 
+            if (-not $finalVersion) {
+              Write-Error "No versions found in $envName"
+              exit 1
+            }
+
             Write-Host "Latest version: $finalVersion"
         }
 
         echo "version=$finalVersion" >> $env:GITHUB_OUTPUT
 
+    # 🔹 4. Download UI
     - name: Download UI Package
       shell: powershell
       run: |
@@ -90,6 +100,7 @@ jobs:
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
+    # 🔹 5. Download API
     - name: Download API Package
       shell: powershell
       run: |
@@ -108,6 +119,7 @@ jobs:
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
+    # 🔹 6. Download DB
     - name: Download DB Package
       shell: powershell
       run: |
@@ -126,6 +138,7 @@ jobs:
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
+    # 🔹 7. Extract
     - name: Extract Packages
       shell: powershell
       run: |
@@ -136,45 +149,46 @@ jobs:
           Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
         }
 
-
+    # 🔴 8. Stop IIS
     - name: Stop API IIS Site
       shell: powershell
       run: |
         Import-Module WebAdministration
-        Write-Host "Stopping IIS site: ptisapi.scipl.info.in"
         Stop-WebSite -Name "ptisapi.scipl.info.in"
 
+    # 💾 9. Backup
     - name: Backup Existing API
       shell: powershell
       run: |
         $time = Get-Date -Format yyyyMMddHHmmss
         $backupPath = "C:\Backup\api_$time"
 
-        Write-Host "Taking backup to $backupPath"
         New-Item -ItemType Directory -Force -Path $backupPath
-
         robocopy "E:\WebApp\ptisapi.scipl.info.in" $backupPath /MIR
 
+    # 🚀 10. Deploy API 
     - name: Deploy API Files
       shell: powershell
       run: |
         $source = "C:\Deploy\api"
         $destination = "E:\WebApp\ptisapi.scipl.info.in"
 
-        Write-Host "Deploying API from $source to $destination"
+        robocopy $source $destination /MIR /XF "appsettings*.json"
 
-        robocopy $source $destination /MIR /XF "appsettings.json"
+        $rc = $LASTEXITCODE
+        Write-Host "Robocopy Exit Code: $rc"
 
-        if ($LASTEXITCODE -le 3) {
-          Write-Host "Robocopy completed successfully"
+        if ($rc -le 3) {
+            Write-Host "Deployment SUCCESS"
+            exit 0
         } else {
-          Write-Error "Robocopy failed with exit code $LASTEXITCODE"
-          exit 1
+            Write-Error "Deployment FAILED"
+            exit $rc
         }
 
+    # 🟢 11. Start IIS
     - name: Start API IIS Site
       shell: powershell
       run: |
         Import-Module WebAdministration
-        Write-Host "Starting IIS site: ptisapi.scipl.info.in"
         Start-WebSite -Name "ptisapi.scipl.info.in"
