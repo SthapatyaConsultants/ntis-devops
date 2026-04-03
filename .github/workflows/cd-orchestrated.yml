@@ -41,7 +41,7 @@ jobs:
         New-Item -ItemType Directory -Force -Path "C:\Deploy"
         New-Item -ItemType Directory -Force -Path "C:\Backup"
 
-    # 🔹 3. Resolve Version (latest or manual)
+    # 🔹 3. Resolve Version
     - name: Resolve Version
       id: resolve
       shell: powershell
@@ -50,12 +50,9 @@ jobs:
         $envName = "${{ github.event.inputs.environment }}"
 
         if ($inputVersion -and $inputVersion -ne "latest") {
-            Write-Host "Using provided version: $inputVersion"
             $finalVersion = $inputVersion
         }
         else {
-            Write-Host "Fetching latest version for $envName..."
-
             $versions = az storage blob list `
               --container-name "${{ env.PACKAGE_CONTAINER }}" `
               --connection-string "${{ env.CONNECTION_STRING }}" `
@@ -75,8 +72,6 @@ jobs:
               Write-Error "No versions found in $envName"
               exit 1
             }
-
-            Write-Host "Latest version: $finalVersion"
         }
 
         echo "version=$finalVersion" >> $env:GITHUB_OUTPUT
@@ -87,11 +82,8 @@ jobs:
       run: |
         $v="${{ steps.resolve.outputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
-
         $fileName="ntis-ui-$envName-v$v.zip"
         $blobPath="$envName/$v/ui/$fileName"
-
-        Write-Host "Downloading UI from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -106,11 +98,8 @@ jobs:
       run: |
         $v="${{ steps.resolve.outputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
-
         $fileName="ntis-platform-api-$envName-v$v.zip"
         $blobPath="$envName/$v/platform/$fileName"
-
-        Write-Host "Downloading API from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -125,11 +114,8 @@ jobs:
       run: |
         $v="${{ steps.resolve.outputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
-
         $fileName="DatabaseManager-v$v.zip"
         $blobPath="$envName/$v/database-manager/$fileName"
-
-        Write-Host "Downloading DB from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -156,7 +142,7 @@ jobs:
         Import-Module WebAdministration
         Stop-WebSite -Name "ptisapi.scipl.info.in"
 
-    # 💾 9. Backup
+    # 💾 9. Backup 
     - name: Backup Existing API
       shell: powershell
       run: |
@@ -164,7 +150,19 @@ jobs:
         $backupPath = "C:\Backup\api_$time"
 
         New-Item -ItemType Directory -Force -Path $backupPath
+
         robocopy "E:\WebApp\ptisapi.scipl.info.in" $backupPath /MIR
+
+        $rc = $LASTEXITCODE
+        Write-Host "Backup Exit Code: $rc"
+
+        if ($rc -le 3) {
+            Write-Host "Backup SUCCESS"
+            exit 0
+        } else {
+            Write-Error "Backup FAILED"
+            exit $rc
+        }
 
     # 🚀 10. Deploy API 
     - name: Deploy API Files
@@ -176,7 +174,7 @@ jobs:
         robocopy $source $destination /MIR /XF "appsettings*.json"
 
         $rc = $LASTEXITCODE
-        Write-Host "Robocopy Exit Code: $rc"
+        Write-Host "Deploy Exit Code: $rc"
 
         if ($rc -le 3) {
             Write-Host "Deployment SUCCESS"
