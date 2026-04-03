@@ -135,3 +135,46 @@ jobs:
         if (Test-Path "C:\Deploy\db.zip") {
           Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
         }
+
+
+    - name: Stop API IIS Site
+      shell: powershell
+      run: |
+        Import-Module WebAdministration
+        Write-Host "Stopping IIS site: ptisapi.scipl.info.in"
+        Stop-WebSite -Name "ptisapi.scipl.info.in"
+
+    - name: Backup Existing API
+      shell: powershell
+      run: |
+        $time = Get-Date -Format yyyyMMddHHmmss
+        $backupPath = "C:\Backup\api_$time"
+
+        Write-Host "Taking backup to $backupPath"
+        New-Item -ItemType Directory -Force -Path $backupPath
+
+        robocopy "E:\WebApp\ptisapi.scipl.info.in" $backupPath /MIR
+
+    - name: Deploy API Files
+      shell: powershell
+      run: |
+        $source = "C:\Deploy\api"
+        $destination = "E:\WebApp\ptisapi.scipl.info.in"
+
+        Write-Host "Deploying API from $source to $destination"
+
+        robocopy $source $destination /MIR /XF "appsettings.json"
+
+        if ($LASTEXITCODE -le 3) {
+          Write-Host "Robocopy completed successfully"
+        } else {
+          Write-Error "Robocopy failed with exit code $LASTEXITCODE"
+          exit 1
+        }
+
+    - name: Start API IIS Site
+      shell: powershell
+      run: |
+        Import-Module WebAdministration
+        Write-Host "Starting IIS site: ptisapi.scipl.info.in"
+        Start-WebSite -Name "ptisapi.scipl.info.in"
