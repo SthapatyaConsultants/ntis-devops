@@ -29,18 +29,18 @@ jobs:
 
     - name: Set Environment Config
       id: config
-      shell: pwsh
+      shell: powershell
       run: |
         $envName = "${{ github.event.inputs.environment }}"
         Write-Host "Environment selected: $envName"
 
     - name: Prepare directories
-      shell: pwsh
+      shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "C:\Deploy"
 
     - name: Download UI Package
-      shell: pwsh
+      shell: powershell
       run: |
         $v="${{ github.event.inputs.version }}"
         Write-Host "Downloading UI version: $v"
@@ -53,7 +53,7 @@ jobs:
           --overwrite
 
     - name: Download API Package
-      shell: pwsh
+      shell: powershell
       run: |
         $v="${{ github.event.inputs.version }}"
         Write-Host "Downloading API version: $v"
@@ -66,7 +66,7 @@ jobs:
           --overwrite
 
     - name: Download DB Package
-      shell: pwsh
+      shell: powershell
       run: |
         $v="${{ github.event.inputs.version }}"
         Write-Host "Downloading DB version: $v"
@@ -79,7 +79,7 @@ jobs:
           --overwrite
 
     - name: Extract Packages
-      shell: pwsh
+      shell: powershell
       run: |
         Expand-Archive "C:\Deploy\ui.zip" -DestinationPath "C:\Deploy\ui" -Force
         Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
