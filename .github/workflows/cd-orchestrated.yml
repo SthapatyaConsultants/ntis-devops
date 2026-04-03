@@ -38,24 +38,68 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "C:\Deploy"
 
-    - name: Download Package
+    - name: Download UI Package
       shell: powershell
       run: |
-        $v = "${{ github.event.inputs.version }}"
-        $envName = "${{ github.event.inputs.environment }}"
+        $v="${{ github.event.inputs.version }}"
+        $envName="${{ github.event.inputs.environment }}"
 
-        Write-Host "Downloading from: $envName/$v/package.zip"
+        $fileName="ntis-ui-$envName-v$v.zip"
+        $blobPath="$envName/$v/ntis-ui/$fileName"
+
+        Write-Host "Downloading UI from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
-          --name "$envName/$v/package.zip" `
-          --file "C:\Deploy\package.zip" `
+          --name "$blobPath" `
+          --file "C:\Deploy\ui.zip" `
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
-    - name: Extract Package
+    - name: Download API Package
       shell: powershell
       run: |
-        Expand-Archive "C:\Deploy\package.zip" -DestinationPath "C:\Deploy\app" -Force
+        $v="${{ github.event.inputs.version }}"
+        $envName="${{ github.event.inputs.environment }}"
 
-   
+        $fileName="ntis-platform-api-$envName-v$v.zip"
+        $blobPath="$envName/$v/ntis-platform/$fileName"
+
+        Write-Host "Downloading API from: $blobPath"
+
+        az storage blob download `
+          --container-name "${{ env.PACKAGE_CONTAINER }}" `
+          --name "$blobPath" `
+          --file "C:\Deploy\api.zip" `
+          --connection-string "${{ env.CONNECTION_STRING }}" `
+          --overwrite
+
+    - name: Download DB Package
+      shell: powershell
+      run: |
+        $v="${{ github.event.inputs.version }}"
+        $envName="${{ github.event.inputs.environment }}"
+
+        $fileName="DatabaseManager-v$v.zip"
+        $blobPath="$envName/$v/ntis-database-manager/$fileName"
+
+        Write-Host "Downloading DB from: $blobPath"
+
+        az storage blob download `
+          --container-name "${{ env.PACKAGE_CONTAINER }}" `
+          --name "$blobPath" `
+          --file "C:\Deploy\db.zip" `
+          --connection-string "${{ env.CONNECTION_STRING }}" `
+          --overwrite
+
+    - name: Extract Packages
+      shell: powershell
+      run: |
+        Expand-Archive "C:\Deploy\ui.zip" -DestinationPath "C:\Deploy\ui" -Force
+        Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
+
+        if (Test-Path "C:\Deploy\db.zip") {
+          Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
+        }
+
+  
