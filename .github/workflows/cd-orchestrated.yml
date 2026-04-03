@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version'
-        required: true
+        description: 'Release version (leave empty for latest)'
+        required: false
         type: string
       environment:
         description: 'Target environment'
@@ -22,7 +22,7 @@ env:
 
 jobs:
   deploy:
-    name: Test Package Download
+    name: Deploy NTIS Packages
     runs-on: [self-hosted, cd, ntis]
 
     steps:
@@ -38,10 +38,44 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "C:\Deploy"
 
+    - name: Resolve Version
+      id: resolve
+      shell: powershell
+      run: |
+        $inputVersion = "${{ github.event.inputs.version }}"
+        $envName = "${{ github.event.inputs.environment }}"
+
+        if ($inputVersion -and $inputVersion -ne "latest") {
+            Write-Host "Using provided version: $inputVersion"
+            $finalVersion = $inputVersion
+        }
+        else {
+            Write-Host "Fetching latest version for $envName..."
+
+            $versions = az storage blob list `
+              --container-name "${{ env.PACKAGE_CONTAINER }}" `
+              --connection-string "${{ env.CONNECTION_STRING }}" `
+              --query "[?starts_with(name, '$envName/')].name" `
+              --output tsv
+
+            $versionList = $versions |
+              ForEach-Object { ($_ -split '/')[1] } |
+              Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } |
+              Sort-Object -Unique
+
+            $finalVersion = $versionList |
+              Sort-Object {[version]$_} -Descending |
+              Select-Object -First 1
+
+            Write-Host "Latest version: $finalVersion"
+        }
+
+        echo "version=$finalVersion" >> $env:GITHUB_OUTPUT
+
     - name: Download UI Package
       shell: powershell
       run: |
-        $v="${{ github.event.inputs.version }}"
+        $v="${{ steps.resolve.outputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
 
         $fileName="ntis-ui-$envName-v$v.zip"
@@ -59,7 +93,7 @@ jobs:
     - name: Download API Package
       shell: powershell
       run: |
-        $v="${{ github.event.inputs.version }}"
+        $v="${{ steps.resolve.outputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
 
         $fileName="ntis-platform-api-$envName-v$v.zip"
@@ -77,7 +111,7 @@ jobs:
     - name: Download DB Package
       shell: powershell
       run: |
-        $v="${{ github.event.inputs.version }}"
+        $v="${{ steps.resolve.outputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
 
         $fileName="DatabaseManager-v$v.zip"
@@ -101,5 +135,3 @@ jobs:
         if (Test-Path "C:\Deploy\db.zip") {
           Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
         }
-
-  
