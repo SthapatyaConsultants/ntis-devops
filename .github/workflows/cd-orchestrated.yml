@@ -45,7 +45,7 @@ jobs:
         $envName="${{ github.event.inputs.environment }}"
 
         $fileName="ntis-ui-$envName-v$v.zip"
-        $blobPath="$envName/$v/ntis-ui/$fileName"
+        $blobPath="$envName/$v/ui/$fileName"
 
         Write-Host "Downloading UI from: $blobPath"
 
@@ -63,7 +63,7 @@ jobs:
         $envName="${{ github.event.inputs.environment }}"
 
         $fileName="ntis-platform-api-$envName-v$v.zip"
-        $blobPath="$envName/$v/ntis-platform/$fileName"
+        $blobPath="$envName/$v/platform/$fileName"
 
         Write-Host "Downloading API from: $blobPath"
 
@@ -81,7 +81,7 @@ jobs:
         $envName="${{ github.event.inputs.environment }}"
 
         $fileName="DatabaseManager-v$v.zip"
-        $blobPath="$envName/$v/ntis-database-manager/$fileName"
+        $blobPath="$envName/$v/database-manager/$fileName"
 
         Write-Host "Downloading DB from: $blobPath"
 
