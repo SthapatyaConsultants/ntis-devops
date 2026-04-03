@@ -1,0 +1,89 @@
+name: CD Deploy - Orchestrated OnPrem
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+
+env:
+  PACKAGE_CONTAINER: ${{ vars.PACKAGE_CONTAINER_NAME }}
+  CONNECTION_STRING: ${{ secrets.PACKAGE_CONNECTION_STRING }}
+
+jobs:
+  deploy:
+    name: Test Package Download
+    runs-on: [self-hosted, cd, ntis]
+
+    steps:
+
+    - name: Set Environment Config
+      id: config
+      shell: pwsh
+      run: |
+        $envName = "${{ github.event.inputs.environment }}"
+        Write-Host "Environment selected: $envName"
+
+    - name: Prepare directories
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path "C:\Deploy"
+
+    - name: Download UI Package
+      shell: pwsh
+      run: |
+        $v="${{ github.event.inputs.version }}"
+        Write-Host "Downloading UI version: $v"
+
+        az storage blob download `
+          --container-name "${{ env.PACKAGE_CONTAINER }}" `
+          --name "ntis-ui/$v/package.zip" `
+          --file "C:\Deploy\ui.zip" `
+          --connection-string "${{ env.CONNECTION_STRING }}" `
+          --overwrite
+
+    - name: Download API Package
+      shell: pwsh
+      run: |
+        $v="${{ github.event.inputs.version }}"
+        Write-Host "Downloading API version: $v"
+
+        az storage blob download `
+          --container-name "${{ env.PACKAGE_CONTAINER }}" `
+          --name "ntis-platform/$v/package.zip" `
+          --file "C:\Deploy\api.zip" `
+          --connection-string "${{ env.CONNECTION_STRING }}" `
+          --overwrite
+
+    - name: Download DB Package
+      shell: pwsh
+      run: |
+        $v="${{ github.event.inputs.version }}"
+        Write-Host "Downloading DB version: $v"
+
+        az storage blob download `
+          --container-name "${{ env.PACKAGE_CONTAINER }}" `
+          --name "ntis-database-manager/$v/package.zip" `
+          --file "C:\Deploy\db.zip" `
+          --connection-string "${{ env.CONNECTION_STRING }}" `
+          --overwrite
+
+    - name: Extract Packages
+      shell: pwsh
+      run: |
+        Expand-Archive "C:\Deploy\ui.zip" -DestinationPath "C:\Deploy\ui" -Force
+        Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
+
+        if (Test-Path "C:\Deploy\db.zip") {
+          Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
+        }
