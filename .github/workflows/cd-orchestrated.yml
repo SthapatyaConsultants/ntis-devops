@@ -233,3 +233,26 @@ jobs:
         }
 
         Write-Host "Database migration completed successfully"
+
+
+    # 🚀 14. Deploy UI Files
+    - name: Deploy UI
+      shell: powershell
+      run: |
+        $source = "C:\Deploy\ui"
+        $destination = "E:\WebApp\ptis.scipl.info.in"
+
+        Write-Host "Deploying UI..."
+
+        robocopy $source $destination /MIR
+
+        $rc = $LASTEXITCODE
+        Write-Host "UI Deploy Exit Code: $rc"
+
+        if ($rc -le 3) {
+            Write-Host "UI Deployment SUCCESS"
+            exit 0
+        } else {
+            Write-Error "UI Deployment FAILED"
+            exit $rc
+        }
