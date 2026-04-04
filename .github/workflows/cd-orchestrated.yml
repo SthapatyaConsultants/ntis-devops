@@ -190,3 +190,46 @@ jobs:
       run: |
         Import-Module WebAdministration
         Start-WebSite -Name "ptisapi.scipl.info.in"
+
+    # 🧠 12. Copy DB Config
+    - name: Copy DB Config
+      shell: powershell
+      run: |
+        $sourceConfig = "C:\appsettings.json"
+        $destination = "C:\Deploy\db\win-x64\appsettings.json"
+
+        Write-Host "Copying DB config..."
+
+        if (!(Test-Path $sourceConfig)) {
+            Write-Error "Source config not found at $sourceConfig"
+            exit 1
+        }
+
+        Copy-Item -Path $sourceConfig -Destination $destination -Force
+
+        Write-Host "DB Config copied successfully"
+
+    # 🚀 13. Run Database Manager
+    - name: Run Database Migration
+      shell: powershell
+      run: |
+        $exePath = "C:\Deploy\db\win-x64\DatabaseManager.exe"
+
+        if (!(Test-Path $exePath)) {
+            Write-Error "DatabaseManager.exe not found at $exePath"
+            exit 1
+        }
+
+        Write-Host "Running DatabaseManager..."
+
+        cmd /c "echo U | `"$exePath`""
+
+        $rc = $LASTEXITCODE
+        Write-Host "DB Exit Code: $rc"
+
+        if ($rc -ne 0) {
+            Write-Error "Database migration failed"
+            exit $rc
+        }
+
+        Write-Host "Database migration completed successfully"
