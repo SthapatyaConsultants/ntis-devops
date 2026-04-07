@@ -209,7 +209,30 @@ jobs:
 
         Write-Host "DB Config copied successfully"
 
-    
+    # 🚀 13. Run Database Manager
+    - name: Run Database Migration
+      shell: powershell
+      run: |
+        $exePath = "C:\Deploy\db\win-x64\DatabaseManager.exe"
+
+        if (!(Test-Path $exePath)) {
+            Write-Error "DatabaseManager.exe not found at $exePath"
+            exit 1
+        }
+
+        Write-Host "Running DatabaseManager..."
+
+        cmd /c "echo U | `"$exePath`""
+
+        $rc = $LASTEXITCODE
+        Write-Host "DB Exit Code: $rc"
+
+        if ($rc -ne 0) {
+            Write-Error "Database migration failed"
+            exit $rc
+        }
+
+        Write-Host "Database migration completed successfully"
 
 
     # 🚀 14. Deploy UI Files
