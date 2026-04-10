@@ -1,5 +1,7 @@
 ﻿name: Package Build - Orchestrated Multi-Environment
 
+run-name: 'Package Build v${{ github.event.inputs.version }} - ${{ github.event.inputs.branch }}'
+
 on:
   workflow_dispatch:
     inputs:
