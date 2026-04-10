@@ -185,6 +185,6 @@ jobs:
       run: |
         cd "E:\WebApp\ptis.scipl.info.in"
 
-        Write-Host "Starting UI on port 3003..."
+        Write-Host "Starting UI on port 3000..."
 
         Start-Process "cmd.exe" -ArgumentList "/c npm start" -WindowStyle Hidden
