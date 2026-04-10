@@ -1,11 +1,11 @@
-name: CD Deploy - Orchestrated OnPrem
+name: Full Deployment Pipeline
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (leave empty for latest)'
-        required: false
+        description: 'Release version'
+        required: true
         type: string
       environment:
         description: 'Target environment'
@@ -22,68 +22,38 @@ env:
 
 jobs:
   deploy:
-    name: Deploy NTIS Packages
+    name: Deploy NTIS (API + DB + UI)
     runs-on: [self-hosted, cd, ntis]
 
     steps:
 
     # 🔹 1. Environment Info
     - name: Set Environment Config
-      shell: powershell
+      shell: pwsh
       run: |
         $envName = "${{ github.event.inputs.environment }}"
-        Write-Host "Environment selected: $envName"
+        $version = "${{ github.event.inputs.version }}"
+        Write-Host "Environment: $envName"
+        Write-Host "Version: $version"
 
     # 🔹 2. Prepare directories
     - name: Prepare directories
-      shell: powershell
+      shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path "C:\Deploy"
         New-Item -ItemType Directory -Force -Path "C:\Backup"
 
-    # 🔹 3. Resolve Version
-    - name: Resolve Version
-      id: resolve
-      shell: powershell
-      run: |
-        $inputVersion = "${{ github.event.inputs.version }}"
-        $envName = "${{ github.event.inputs.environment }}"
-
-        if ($inputVersion -and $inputVersion -ne "latest") {
-            $finalVersion = $inputVersion
-        }
-        else {
-            $versions = az storage blob list `
-              --container-name "${{ env.PACKAGE_CONTAINER }}" `
-              --connection-string "${{ env.CONNECTION_STRING }}" `
-              --query "[?starts_with(name, '$envName/')].name" `
-              --output tsv
-
-            $versionList = $versions |
-              ForEach-Object { ($_ -split '/')[1] } |
-              Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } |
-              Sort-Object -Unique
-
-            $finalVersion = $versionList |
-              Sort-Object {[version]$_} -Descending |
-              Select-Object -First 1
-
-            if (-not $finalVersion) {
-              Write-Error "No versions found in $envName"
-              exit 1
-            }
-        }
-
-        echo "version=$finalVersion" >> $env:GITHUB_OUTPUT
-
-    # 🔹 4. Download UI
+    # 🔹 3. Download UI
     - name: Download UI Package
-      shell: powershell
+      shell: pwsh
       run: |
-        $v="${{ steps.resolve.outputs.version }}"
+        $v="${{ github.event.inputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
+
         $fileName="ntis-ui-$envName-v$v.zip"
         $blobPath="$envName/$v/ui/$fileName"
+
+        Write-Host "Downloading UI from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -92,14 +62,17 @@ jobs:
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
-    # 🔹 5. Download API
+    # 🔹 4. Download API
     - name: Download API Package
-      shell: powershell
+      shell: pwsh
       run: |
-        $v="${{ steps.resolve.outputs.version }}"
+        $v="${{ github.event.inputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
+
         $fileName="ntis-platform-api-$envName-v$v.zip"
         $blobPath="$envName/$v/platform/$fileName"
+
+        Write-Host "Downloading API from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -108,14 +81,17 @@ jobs:
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
-    # 🔹 6. Download DB
+    # 🔹 5. Download DB
     - name: Download DB Package
-      shell: powershell
+      shell: pwsh
       run: |
-        $v="${{ steps.resolve.outputs.version }}"
+        $v="${{ github.event.inputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
+
         $fileName="DatabaseManager-v$v.zip"
         $blobPath="$envName/$v/database-manager/$fileName"
+
+        Write-Host "Downloading DB from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -124,9 +100,9 @@ jobs:
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
-    # 🔹 7. Extract
+    # 🔹 6. Extract Packages
     - name: Extract Packages
-      shell: powershell
+      shell: pwsh
       run: |
         Expand-Archive "C:\Deploy\ui.zip" -DestinationPath "C:\Deploy\ui" -Force
         Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
@@ -135,16 +111,16 @@ jobs:
           Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
         }
 
-    # 🔴 8. Stop IIS
+    # 🔴 7. Stop API IIS
     - name: Stop API IIS Site
-      shell: powershell
+      shell: pwsh
       run: |
         Import-Module WebAdministration
         Stop-WebSite -Name "ptisapi.scipl.info.in"
 
-    # 💾 9. Backup 
-    - name: Backup Existing API
-      shell: powershell
+    # 💾 8. Backup API
+    - name: Backup API
+      shell: pwsh
       run: |
         $time = Get-Date -Format yyyyMMddHHmmss
         $backupPath = "C:\Backup\api_$time"
@@ -153,106 +129,62 @@ jobs:
 
         robocopy "E:\WebApp\ptisapi.scipl.info.in" $backupPath /MIR
 
-        $rc = $LASTEXITCODE
-        Write-Host "Backup Exit Code: $rc"
+        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-        if ($rc -le 3) {
-            Write-Host "Backup SUCCESS"
-            exit 0
-        } else {
-            Write-Error "Backup FAILED"
-            exit $rc
-        }
-
-    # 🚀 10. Deploy API 
-    - name: Deploy API Files
-      shell: powershell
+    # 🚀 9. Deploy API
+    - name: Deploy API
+      shell: pwsh
       run: |
-        $source = "C:\Deploy\api"
-        $destination = "E:\WebApp\ptisapi.scipl.info.in"
+        robocopy "C:\Deploy\api" "E:\WebApp\ptisapi.scipl.info.in" /MIR /XF "appsettings*.json"
 
-        robocopy $source $destination /MIR /XF "appsettings*.json"
+        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-        $rc = $LASTEXITCODE
-        Write-Host "Deploy Exit Code: $rc"
-
-        if ($rc -le 3) {
-            Write-Host "Deployment SUCCESS"
-            exit 0
-        } else {
-            Write-Error "Deployment FAILED"
-            exit $rc
-        }
-
-    # 🟢 11. Start IIS
+    # 🟢 10. Start API
     - name: Start API IIS Site
-      shell: powershell
+      shell: pwsh
       run: |
         Import-Module WebAdministration
         Start-WebSite -Name "ptisapi.scipl.info.in"
 
-    # 🧠 12. Copy DB Config
+    # 🧠 11. Copy DB Config
     - name: Copy DB Config
-      shell: powershell
+      shell: pwsh
       run: |
-        $sourceConfig = "C:\appsettings.json"
-        $destination = "C:\Deploy\db\win-x64\appsettings.json"
+        Copy-Item "C:\appsettings.json" "C:\Deploy\db\win-x64\appsettings.json" -Force
 
-        Write-Host "Copying DB config..."
-
-        if (!(Test-Path $sourceConfig)) {
-            Write-Error "Source config not found at $sourceConfig"
-            exit 1
-        }
-
-        Copy-Item -Path $sourceConfig -Destination $destination -Force
-
-        Write-Host "DB Config copied successfully"
-
-    # 🚀 13. Run Database Manager
-    - name: Run Database Migration
-      shell: powershell
+    # 🚀 12. Run DB Migration
+    - name: Run Database Manager
+      shell: pwsh
       run: |
-        $exePath = "C:\Deploy\db\win-x64\DatabaseManager.exe"
+        cmd /c "echo C | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
 
-        if (!(Test-Path $exePath)) {
-            Write-Error "DatabaseManager.exe not found at $exePath"
-            exit 1
-        }
+    # 💾 13. Backup UI
+    - name: Backup UI
+      shell: pwsh
+      run: |
+        $time = Get-Date -Format yyyyMMddHHmmss
+        $backupPath = "C:\Backup\ui_$time"
 
-        Write-Host "Running DatabaseManager..."
+        New-Item -ItemType Directory -Force -Path $backupPath
 
-        cmd /c "echo U | `"$exePath`""
+        robocopy "E:\WebApp\ptis.scipl.info.in" $backupPath /MIR
 
-        $rc = $LASTEXITCODE
-        Write-Host "DB Exit Code: $rc"
+        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-        if ($rc -ne 0) {
-            Write-Error "Database migration failed"
-            exit $rc
-        }
-
-        Write-Host "Database migration completed successfully"
-
-
-    # 🚀 14. Deploy UI Files
+    # 🚀 14. Deploy UI
     - name: Deploy UI
-      shell: powershell
+      shell: pwsh
       run: |
-        $source = "C:\Deploy\ui"
-        $destination = "E:\WebApp\ptis.scipl.info.in"
+        robocopy "C:\Deploy\ui" "E:\WebApp\ptis.scipl.info.in" /MIR
 
-        Write-Host "Deploying UI..."
+        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-        robocopy $source $destination /MIR
+    # 🚀 15. Start UI (Node)
+    - name: Start UI Server
+      shell: pwsh
+      run: |
+        cd "E:\WebApp\ptis.scipl.info.in"
 
-        $rc = $LASTEXITCODE
-        Write-Host "UI Deploy Exit Code: $rc"
+        Write-Host "Starting UI on port 3000..."
 
-        if ($rc -le 3) {
-            Write-Host "UI Deployment SUCCESS"
-            exit 0
-        } else {
-            Write-Error "UI Deployment FAILED"
-            exit $rc
-        }
+        Start-Process "cmd.exe" -ArgumentList "/c npm start" -WindowStyle Hidden
