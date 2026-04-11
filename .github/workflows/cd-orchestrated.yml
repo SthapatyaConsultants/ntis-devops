@@ -179,12 +179,12 @@ jobs:
 
         if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-    # 🚀 15. Start UI (Node)
-- name: Start UI Server
-  shell: pwsh
-  run: |
-    Write-Host "Starting UI via start-ui.cmd (safe restart on port 3000)..."
+       # 🚀 15. Start UI (Node)
+    - name: Start UI Server
+      shell: pwsh
+      run: |
+        Write-Host "Starting UI via start-ui.cmd (safe restart on port 3000)..."
 
-    Start-Process "cmd.exe" `
-      -ArgumentList '/c E:\WebApp\ptis.scipl.info.in\start-ui.cmd' `
-      -WindowStyle Hidden
+        Start-Process "cmd.exe" `
+          -ArgumentList '/c E:\WebApp\ptis.scipl.info.in\start-ui.cmd' `
+          -WindowStyle Hidden
