@@ -7,14 +7,11 @@ on:
         description: 'Release version'
         required: true
         type: string
-      environment:
-        description: 'Target environment'
+
+      url:
+        description: 'UI URL (example: ptis.scipl.info.in)'
         required: true
-        type: choice
-        options:
-          - dev
-          - qa
-          - prod
+        type: string
 
 env:
   PACKAGE_CONTAINER: ${{ vars.PACKAGE_CONTAINER_NAME }}
@@ -22,159 +19,169 @@ env:
 
 jobs:
   deploy:
-    name: Deploy NTIS (API + DB + UI)
     runs-on: [self-hosted, cd, ntis]
 
     steps:
 
-    # 🔹 1. Environment Info
-    - name: Set Environment Config
+    # 🔹 1. Parse URL → Tenant + Env
+    - name: Parse URL
       shell: pwsh
       run: |
-        $envName = "${{ github.event.inputs.environment }}"
-        $version = "${{ github.event.inputs.version }}"
-        Write-Host "Environment: $envName"
-        Write-Host "Version: $version"
+        $url="${{ github.event.inputs.url }}".ToLower()
 
-    # 🔹 2. Prepare directories
+        # Detect environment
+        if ($url -match "dev") { $envName="dev" }
+        elseif ($url -match "qa") { $envName="qa" }
+        else { $envName="prod" }
+
+        # Extract tenant (first part before dot)
+        $tenantName = $url.Split('.')[0]
+
+        echo "ENV_NAME=$envName" >> $env:GITHUB_ENV
+        echo "TENANT_NAME=$tenantName" >> $env:GITHUB_ENV
+
+        echo "API_SITE=$tenantName-api" >> $env:GITHUB_ENV
+        echo "API_PATH=E:\WebApp\$tenantName-api" >> $env:GITHUB_ENV
+        echo "UI_PATH=E:\WebApp\$tenantName" >> $env:GITHUB_ENV
+        echo "UI_SERVICE=$tenantName-ui" >> $env:GITHUB_ENV
+
+        Write-Host "Tenant: $tenantName"
+        Write-Host "Environment: $envName"
+
+    # 🔹 2. Checkout Config Repo
+    - name: Checkout Config Repo
+      uses: actions/checkout@v4
+      with:
+        repository: SthapatyaConsultants/ntis-configs  
+        token: ${{ secrets.GITHUB_TOKEN }}
+        path: ntis-configs
+
+    # 🔹 3. Prepare folders
     - name: Prepare directories
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path "C:\Deploy"
         New-Item -ItemType Directory -Force -Path "C:\Backup"
 
-    # 🔹 3. Download UI
-    - name: Download UI Package
+    # 🔹 4. Download UI
+    - name: Download UI
       shell: pwsh
       run: |
         $v="${{ github.event.inputs.version }}"
-        $envName="${{ github.event.inputs.environment }}"
-        $fileName="ntis-ui-$envName-v$v.zip"
-        $blobPath="$envName/$v/ui/$fileName"
+        $envName="$env:ENV_NAME"
+
+        $file="ntis-ui-$envName-v$v.zip"
+        $blob="$envName/$v/ui/$file"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
-          --name "$blobPath" `
+          --name "$blob" `
           --file "C:\Deploy\ui.zip" `
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
-    # 🔹 4. Download API
-    - name: Download API Package
+    # 🔹 5. Download API
+    - name: Download API
       shell: pwsh
       run: |
         $v="${{ github.event.inputs.version }}"
-        $envName="${{ github.event.inputs.environment }}"
-        $fileName="ntis-platform-api-$envName-v$v.zip"
-        $blobPath="$envName/$v/platform/$fileName"
+        $envName="$env:ENV_NAME"
+
+        $file="ntis-platform-api-$envName-v$v.zip"
+        $blob="$envName/$v/platform/$file"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
-          --name "$blobPath" `
+          --name "$blob" `
           --file "C:\Deploy\api.zip" `
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
-    # 🔹 5. Download DB
-    - name: Download DB Package
+    # 🔹 6. Download DB
+    - name: Download DB
       shell: pwsh
       run: |
         $v="${{ github.event.inputs.version }}"
-        $envName="${{ github.event.inputs.environment }}"
-        $fileName="DatabaseManager-v$v.zip"
-        $blobPath="$envName/$v/database-manager/$fileName"
+        $envName="$env:ENV_NAME"
+
+        $file="DatabaseManager-v$v.zip"
+        $blob="$envName/$v/database-manager/$file"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
-          --name "$blobPath" `
+          --name "$blob" `
           --file "C:\Deploy\db.zip" `
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
-    # 🔹 6. Extract Packages
+    # 🔹 7. Extract
     - name: Extract Packages
       shell: pwsh
       run: |
         Expand-Archive "C:\Deploy\ui.zip" -DestinationPath "C:\Deploy\ui" -Force
         Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
+        Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
 
-        if (Test-Path "C:\Deploy\db.zip") {
-          Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
-        }
-
-    # 🔴 7. Stop API IIS
-    - name: Stop API IIS Site
+    # 🔴 8. Stop Services
+    - name: Stop API
       shell: pwsh
       run: |
         Import-Module WebAdministration
-        Stop-WebSite -Name "ptisapi.scipl.info.in"
+        Stop-WebSite -Name "$env:API_SITE"
 
-    # 💾 8. Backup API
-    - name: Backup API
+    - name: Stop UI Service
       shell: pwsh
       run: |
-        $time = Get-Date -Format yyyyMMddHHmmss
-        $backupPath = "C:\Backup\api_$time"
-        New-Item -ItemType Directory -Force -Path $backupPath
+        sc stop $env:UI_SERVICE
 
-        robocopy "E:\WebApp\ptisapi.scipl.info.in" $backupPath /MIR
-        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
+    # 💾 9. Backup
+    - name: Backup API & UI
+      shell: pwsh
+      run: |
+        $t = Get-Date -Format yyyyMMddHHmmss
 
-    # 🚀 9. Deploy API
+        robocopy "$env:API_PATH" "C:\Backup\api_$t" /MIR
+        robocopy "$env:UI_PATH" "C:\Backup\ui_$t" /MIR
+
+    # 🚀 10. Deploy
     - name: Deploy API
       shell: pwsh
       run: |
-        robocopy "C:\Deploy\api" "E:\WebApp\ptisapi.scipl.info.in" /MIR /XF "appsettings*.json"
-        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
+        robocopy "C:\Deploy\api" "$env:API_PATH" /MIR /XF "appsettings*.json"
 
-    # 🟢 10. Start API
-    - name: Start API IIS Site
+    - name: Deploy UI
       shell: pwsh
       run: |
-        Import-Module WebAdministration
-        Start-WebSite -Name "ptisapi.scipl.info.in"
+        robocopy "C:\Deploy\ui" "$env:UI_PATH" /MIR /XF "web.config"
 
-    # 🧠 11. Copy DB Config
-    - name: Copy DB Config
+    # 🧠 11. Apply Tenant Configs
+    - name: Apply Configs
       shell: pwsh
       run: |
-        Copy-Item "C:\appsettings.json" "C:\Deploy\db\win-x64\appsettings.json" -Force
+        $tenant="$env:TENANT_NAME"
+        $envName="$env:ENV_NAME"
 
-    # 🚀 12. Run DB Migration
-    - name: Run Database Manager
+        $base="ntis-configs/tenants/$tenant/$envName"
+
+        Copy-Item "$base/platform/appsettings.Api.Production.json" "$env:API_PATH\appsettings.Production.json" -Force
+        Copy-Item "$base/platform/appsettings.Worker.Production.json" "$env:API_PATH\appsettings.Worker.json" -Force
+        Copy-Item "$base/database-manager/appsettings.json" "C:\Deploy\db\win-x64\appsettings.json" -Force
+        Copy-Item "$base/ui/.env.production" "$env:UI_PATH\.env" -Force
+
+    # 🚀 12. Run DB Migration 
+    - name: Run DB Migration
       shell: pwsh
       run: |
         cmd /c "echo C | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
 
-    # 🔴 13. Stop UI Service
-    - name: Stop UI Service
+    # 🟢 13. Start Services
+    - name: Start API
       shell: pwsh
       run: |
-        Write-Host "Stopping PTIS UI Service..."
-        net stop PTIS-UI 2>$null
-        Start-Sleep -Seconds 3
+        Import-Module WebAdministration
+        Start-WebSite -Name "$env:API_SITE"
 
-    # 💾 14. Backup UI
-    - name: Backup UI
-      shell: pwsh
-      run: |
-        $time = Get-Date -Format yyyyMMddHHmmss
-        $backupPath = "C:\Backup\ui_$time"
-        New-Item -ItemType Directory -Force -Path $backupPath
-
-        robocopy "E:\WebApp\ptis.scipl.info.in" $backupPath /MIR
-        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
-
-    # 🚀 15. Deploy UI
-    - name: Deploy UI
-      shell: pwsh
-      run: |
-        robocopy "C:\Deploy\ui" "E:\WebApp\ptis.scipl.info.in" /MIR /XF "web.config" 
-        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
-
-    # 🟢 16. Start UI Service
     - name: Start UI Service
       shell: pwsh
       run: |
-        Write-Host "Starting PTIS UI Service..."
-        net start PTIS-UI
+        sc start $env:UI_SERVICE
