@@ -143,22 +143,6 @@ jobs:
           Write-Host "UI service already stopped or not found"
         }
 
-    # 💾 9. Backup (SAFE + FIXED)
-    - name: Backup API & UI
-      shell: pwsh
-      run: |
-        $t = Get-Date -Format yyyyMMddHHmmss
-
-        if (Test-Path "$env:API_PATH") {
-          robocopy "$env:API_PATH" "C:\Backup\api_$t" /MIR
-          if ($LASTEXITCODE -le 3) { Write-Host "API backup OK" } else { exit $LASTEXITCODE }
-        }
-
-        if (Test-Path "$env:UI_PATH") {
-          robocopy "$env:UI_PATH" "C:\Backup\ui_$t" /MIR
-          if ($LASTEXITCODE -le 3) { Write-Host "UI backup OK" } else { exit $LASTEXITCODE }
-        }
-
     # 🚀 10. Deploy
     - name: Deploy API
       shell: pwsh
