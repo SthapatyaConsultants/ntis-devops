@@ -169,7 +169,7 @@ jobs:
     - name: Deploy UI
       shell: pwsh
       run: |
-        robocopy "C:\Deploy\ui" "E:\WebApp\ptis.scipl.info.in" /MIR
+        robocopy "C:\Deploy\ui" "E:\WebApp\ptis.scipl.info.in" /MIR /XF "web.config" 
         if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
     # 🟢 16. Start UI Service
