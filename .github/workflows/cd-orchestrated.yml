@@ -29,12 +29,10 @@ jobs:
       run: |
         $url="${{ github.event.inputs.url }}".ToLower()
 
-        # Detect environment
         if ($url -match "dev") { $envName="dev" }
         elseif ($url -match "qa") { $envName="qa" }
         else { $envName="prod" }
 
-        # Extract tenant (first part before dot)
         $tenantName = $url.Split('.')[0]
 
         echo "ENV_NAME=$envName" >> $env:GITHUB_ENV
@@ -52,11 +50,11 @@ jobs:
     - name: Checkout Config Repo
       uses: actions/checkout@v4
       with:
-        repository: SthapatyaConsultants/ntis-configs  
+        repository: SthapatyaConsultants/ntis-configs
         token: ${{ secrets.CONFIG_REPO_TOKEN }}
         path: ntis-configs
 
-    # 🔹 3. Prepare folders
+    # 🔹 3. Prepare directories
     - name: Prepare directories
       shell: pwsh
       run: |
@@ -122,39 +120,59 @@ jobs:
         Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
         Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
 
-    # 🔴 8. Stop Services
+    # 🔴 8. Stop Services (SAFE)
     - name: Stop API
       shell: pwsh
       run: |
         Import-Module WebAdministration
-        Stop-WebSite -Name "$env:API_SITE"
+        if (Get-Website | Where-Object { $_.Name -eq "$env:API_SITE" }) {
+          Stop-WebSite -Name "$env:API_SITE"
+          Write-Host "API stopped"
+        } else {
+          Write-Host "API site not found, skipping"
+        }
 
     - name: Stop UI Service
       shell: pwsh
       run: |
-        sc stop $env:UI_SERVICE
+        $svc = Get-Service -Name "$env:UI_SERVICE" -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -ne "Stopped") {
+          sc stop $env:UI_SERVICE
+          Write-Host "UI service stopped"
+        } else {
+          Write-Host "UI service already stopped or not found"
+        }
 
-    # 💾 9. Backup
+    # 💾 9. Backup (SAFE + FIXED)
     - name: Backup API & UI
       shell: pwsh
       run: |
         $t = Get-Date -Format yyyyMMddHHmmss
 
-        robocopy "$env:API_PATH" "C:\Backup\api_$t" /MIR
-        robocopy "$env:UI_PATH" "C:\Backup\ui_$t" /MIR
+        if (Test-Path "$env:API_PATH") {
+          robocopy "$env:API_PATH" "C:\Backup\api_$t" /MIR
+          if ($LASTEXITCODE -le 3) { Write-Host "API backup OK" } else { exit $LASTEXITCODE }
+        }
+
+        if (Test-Path "$env:UI_PATH") {
+          robocopy "$env:UI_PATH" "C:\Backup\ui_$t" /MIR
+          if ($LASTEXITCODE -le 3) { Write-Host "UI backup OK" } else { exit $LASTEXITCODE }
+        }
 
     # 🚀 10. Deploy
     - name: Deploy API
       shell: pwsh
       run: |
         robocopy "C:\Deploy\api" "$env:API_PATH" /MIR /XF "appsettings*.json"
+        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
     - name: Deploy UI
       shell: pwsh
       run: |
         robocopy "C:\Deploy\ui" "$env:UI_PATH" /MIR /XF "web.config"
+        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-    # 🧠 11. Apply Tenant Configs
+    # 🧠 11. Apply Configs
     - name: Apply Configs
       shell: pwsh
       run: |
@@ -168,7 +186,7 @@ jobs:
         Copy-Item "$base/database-manager/appsettings.json" "C:\Deploy\db\win-x64\appsettings.json" -Force
         Copy-Item "$base/ui/.env.production" "$env:UI_PATH\.env" -Force
 
-    # 🚀 12. Run DB Migration 
+    # 🚀 12. DB Migration
     - name: Run DB Migration
       shell: pwsh
       run: |
@@ -179,7 +197,9 @@ jobs:
       shell: pwsh
       run: |
         Import-Module WebAdministration
-        Start-WebSite -Name "$env:API_SITE"
+        if (Get-Website | Where-Object { $_.Name -eq "$env:API_SITE" }) {
+          Start-WebSite -Name "$env:API_SITE"
+        }
 
     - name: Start UI Service
       shell: pwsh
