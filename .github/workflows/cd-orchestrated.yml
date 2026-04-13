@@ -49,11 +49,8 @@ jobs:
       run: |
         $v="${{ github.event.inputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
-
         $fileName="ntis-ui-$envName-v$v.zip"
         $blobPath="$envName/$v/ui/$fileName"
-
-        Write-Host "Downloading UI from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -68,11 +65,8 @@ jobs:
       run: |
         $v="${{ github.event.inputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
-
         $fileName="ntis-platform-api-$envName-v$v.zip"
         $blobPath="$envName/$v/platform/$fileName"
-
-        Write-Host "Downloading API from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -87,11 +81,8 @@ jobs:
       run: |
         $v="${{ github.event.inputs.version }}"
         $envName="${{ github.event.inputs.environment }}"
-
         $fileName="DatabaseManager-v$v.zip"
         $blobPath="$envName/$v/database-manager/$fileName"
-
-        Write-Host "Downloading DB from: $blobPath"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -124,11 +115,9 @@ jobs:
       run: |
         $time = Get-Date -Format yyyyMMddHHmmss
         $backupPath = "C:\Backup\api_$time"
-
         New-Item -ItemType Directory -Force -Path $backupPath
 
         robocopy "E:\WebApp\ptisapi.scipl.info.in" $backupPath /MIR
-
         if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
     # 🚀 9. Deploy API
@@ -136,7 +125,6 @@ jobs:
       shell: pwsh
       run: |
         robocopy "C:\Deploy\api" "E:\WebApp\ptisapi.scipl.info.in" /MIR /XF "appsettings*.json"
-
         if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
     # 🟢 10. Start API
@@ -158,33 +146,35 @@ jobs:
       run: |
         cmd /c "echo C | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
 
-    # 💾 13. Backup UI
+    # 🔴 13. Stop UI Service
+    - name: Stop UI Service
+      shell: pwsh
+      run: |
+        Write-Host "Stopping PTIS UI Service..."
+        net stop PTIS-UI 2>$null
+        Start-Sleep -Seconds 3
+
+    # 💾 14. Backup UI
     - name: Backup UI
       shell: pwsh
       run: |
         $time = Get-Date -Format yyyyMMddHHmmss
         $backupPath = "C:\Backup\ui_$time"
-
         New-Item -ItemType Directory -Force -Path $backupPath
 
         robocopy "E:\WebApp\ptis.scipl.info.in" $backupPath /MIR
-
         if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-    # 🚀 14. Deploy UI
+    # 🚀 15. Deploy UI
     - name: Deploy UI
       shell: pwsh
       run: |
         robocopy "C:\Deploy\ui" "E:\WebApp\ptis.scipl.info.in" /MIR
-
         if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-       # 🚀 15. Start UI (Node)
-    - name: Start UI Server
+    # 🟢 16. Start UI Service
+    - name: Start UI Service
       shell: pwsh
       run: |
-        Write-Host "Starting UI via start-ui.cmd (safe restart on port 3000)..."
-
-        Start-Process "cmd.exe" `
-          -ArgumentList '/c E:\WebApp\ptis.scipl.info.in\start-ui.cmd' `
-          -WindowStyle Hidden
+        Write-Host "Starting PTIS UI Service..."
+        net start PTIS-UI
