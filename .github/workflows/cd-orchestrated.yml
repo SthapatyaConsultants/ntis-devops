@@ -43,7 +43,6 @@ jobs:
           $tenantName = $sub
         }
 
-        # ✅ Multi-environment paths
         if ($envName -eq "prod") {
           $apiSite = "$tenantName-api"
           $apiPath = "E:\WebApp\$tenantName-api"
@@ -67,6 +66,7 @@ jobs:
         Write-Host "Environment: $envName"
         Write-Host "API Path: $apiPath"
         Write-Host "UI Path: $uiPath"
+        Write-Host "UI Service: $uiService"
 
     # 🔹 2. Checkout Config Repo
     - name: Checkout Config Repo
@@ -80,17 +80,18 @@ jobs:
     - name: Prepare directories
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path "C:\Deploy"
-        New-Item -ItemType Directory -Force -Path "C:\Backup"
+        New-Item -ItemType Directory -Force -Path "C:\Deploy" | Out-Null
+        New-Item -ItemType Directory -Force -Path "C:\Backup" | Out-Null
+        New-Item -ItemType Directory -Force -Path "$env:API_PATH" | Out-Null
+        New-Item -ItemType Directory -Force -Path "$env:UI_PATH" | Out-Null
 
     # 🔹 4. Download Packages
     - name: Download UI
       shell: pwsh
       run: |
         $v="${{ github.event.inputs.version }}"
-        $envName="$env:ENV_NAME"
-        $file="ntis-ui-$envName-v$v.zip"
-        $blob="$envName/$v/ui/$file"
+        $file="ntis-ui-$env:ENV_NAME-v$v.zip"
+        $blob="$env:ENV_NAME/$v/ui/$file"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -103,9 +104,8 @@ jobs:
       shell: pwsh
       run: |
         $v="${{ github.event.inputs.version }}"
-        $envName="$env:ENV_NAME"
-        $file="ntis-platform-api-$envName-v$v.zip"
-        $blob="$envName/$v/platform/$file"
+        $file="ntis-platform-api-$env:ENV_NAME-v$v.zip"
+        $blob="$env:ENV_NAME/$v/platform/$file"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -118,9 +118,8 @@ jobs:
       shell: pwsh
       run: |
         $v="${{ github.event.inputs.version }}"
-        $envName="$env:ENV_NAME"
         $file="DatabaseManager-v$v.zip"
-        $blob="$envName/$v/database-manager/$file"
+        $blob="$env:ENV_NAME/$v/database-manager/$file"
 
         az storage blob download `
           --container-name "${{ env.PACKAGE_CONTAINER }}" `
@@ -137,13 +136,14 @@ jobs:
         Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
         Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
 
-    # 🔴 6. Stop Services (SAFE)
+    # 🔴 6. Stop Services
     - name: Stop API
       shell: pwsh
       run: |
         Import-Module WebAdministration
         if (Get-Website | Where-Object { $_.Name -eq "$env:API_SITE" }) {
           Stop-WebSite -Name "$env:API_SITE"
+          Write-Host "API stopped"
         }
 
     - name: Stop UI Service
@@ -152,6 +152,7 @@ jobs:
         $svc = Get-Service -Name "$env:UI_SERVICE" -ErrorAction SilentlyContinue
         if ($svc -and $svc.Status -ne "Stopped") {
           sc stop $env:UI_SERVICE
+          Write-Host "UI service stopped"
         }
 
     # 💾 7. Backup
@@ -187,9 +188,7 @@ jobs:
     - name: Apply Configs
       shell: pwsh
       run: |
-        $tenant="$env:TENANT_NAME"
-        $envName="$env:ENV_NAME"
-        $base="ntis-configs/tenants/$tenant/$envName"
+        $base="ntis-configs/tenants/$env:TENANT_NAME/$env:ENV_NAME"
 
         Copy-Item "$base/platform/appsettings.Api.Production.json" "$env:API_PATH\appsettings.Production.json" -Force
 
@@ -218,4 +217,9 @@ jobs:
     - name: Start UI Service
       shell: pwsh
       run: |
-        sc start $env:UI_SERVICE
+        $svc = Get-Service -Name "$env:UI_SERVICE" -ErrorAction SilentlyContinue
+        if ($svc) {
+          sc start $env:UI_SERVICE
+        } else {
+          Write-Host "UI Service not found"
+        }
