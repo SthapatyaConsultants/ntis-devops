@@ -23,6 +23,7 @@ jobs:
 
     steps:
 
+    # 🔹 1. Parse URL + Multi-Env Mapping
     - name: Parse URL
       shell: pwsh
       run: |
@@ -42,17 +43,32 @@ jobs:
           $tenantName = $sub
         }
 
+        # ✅ Multi-environment paths
+        if ($envName -eq "prod") {
+          $apiSite = "$tenantName-api"
+          $apiPath = "E:\WebApp\$tenantName-api"
+          $uiPath  = "E:\WebApp\$tenantName"
+          $uiService = "$tenantName-ui"
+        } else {
+          $apiSite = "$tenantName-api-$envName"
+          $apiPath = "E:\WebApp\$tenantName-api-$envName"
+          $uiPath  = "E:\WebApp\$tenantName-$envName"
+          $uiService = "$tenantName-ui-$envName"
+        }
+
         echo "ENV_NAME=$envName" >> $env:GITHUB_ENV
         echo "TENANT_NAME=$tenantName" >> $env:GITHUB_ENV
-
-        echo "API_SITE=$tenantName-api" >> $env:GITHUB_ENV
-        echo "API_PATH=E:\WebApp\$tenantName-api" >> $env:GITHUB_ENV
-        echo "UI_PATH=E:\WebApp\$tenantName" >> $env:GITHUB_ENV
-        echo "UI_SERVICE=$tenantName-ui" >> $env:GITHUB_ENV
+        echo "API_SITE=$apiSite" >> $env:GITHUB_ENV
+        echo "API_PATH=$apiPath" >> $env:GITHUB_ENV
+        echo "UI_PATH=$uiPath" >> $env:GITHUB_ENV
+        echo "UI_SERVICE=$uiService" >> $env:GITHUB_ENV
 
         Write-Host "Tenant: $tenantName"
         Write-Host "Environment: $envName"
+        Write-Host "API Path: $apiPath"
+        Write-Host "UI Path: $uiPath"
 
+    # 🔹 2. Checkout Config Repo
     - name: Checkout Config Repo
       uses: actions/checkout@v4
       with:
@@ -60,18 +76,19 @@ jobs:
         token: ${{ secrets.CONFIG_REPO_TOKEN }}
         path: ntis-configs
 
+    # 🔹 3. Prepare directories
     - name: Prepare directories
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path "C:\Deploy"
         New-Item -ItemType Directory -Force -Path "C:\Backup"
 
+    # 🔹 4. Download Packages
     - name: Download UI
       shell: pwsh
       run: |
         $v="${{ github.event.inputs.version }}"
         $envName="$env:ENV_NAME"
-
         $file="ntis-ui-$envName-v$v.zip"
         $blob="$envName/$v/ui/$file"
 
@@ -87,7 +104,6 @@ jobs:
       run: |
         $v="${{ github.event.inputs.version }}"
         $envName="$env:ENV_NAME"
-
         $file="ntis-platform-api-$envName-v$v.zip"
         $blob="$envName/$v/platform/$file"
 
@@ -103,7 +119,6 @@ jobs:
       run: |
         $v="${{ github.event.inputs.version }}"
         $envName="$env:ENV_NAME"
-
         $file="DatabaseManager-v$v.zip"
         $blob="$envName/$v/database-manager/$file"
 
@@ -114,6 +129,7 @@ jobs:
           --connection-string "${{ env.CONNECTION_STRING }}" `
           --overwrite
 
+    # 🔹 5. Extract
     - name: Extract Packages
       shell: pwsh
       run: |
@@ -121,6 +137,7 @@ jobs:
         Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
         Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
 
+    # 🔴 6. Stop Services (SAFE)
     - name: Stop API
       shell: pwsh
       run: |
@@ -137,6 +154,7 @@ jobs:
           sc stop $env:UI_SERVICE
         }
 
+    # 💾 7. Backup
     - name: Backup API & UI
       shell: pwsh
       run: |
@@ -152,6 +170,7 @@ jobs:
 
         exit 0
 
+    # 🚀 8. Deploy
     - name: Deploy API
       shell: pwsh
       run: |
@@ -164,12 +183,12 @@ jobs:
         robocopy "C:\Deploy\ui" "$env:UI_PATH" /MIR /XF "web.config"
         if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
+    # 🧠 9. Apply Configs
     - name: Apply Configs
       shell: pwsh
       run: |
         $tenant="$env:TENANT_NAME"
         $envName="$env:ENV_NAME"
-
         $base="ntis-configs/tenants/$tenant/$envName"
 
         Copy-Item "$base/platform/appsettings.Api.Production.json" "$env:API_PATH\appsettings.Production.json" -Force
@@ -181,11 +200,13 @@ jobs:
         Copy-Item "$base/database-manager/appsettings.json" "C:\Deploy\db\win-x64\appsettings.json" -Force
         Copy-Item "$base/ui/.env.production" "$env:UI_PATH\.env" -Force
 
+    # 🚀 10. DB Migration
     - name: Run DB Migration
       shell: pwsh
       run: |
         cmd /c "echo C | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
 
+    # 🟢 11. Start Services
     - name: Start API
       shell: pwsh
       run: |
