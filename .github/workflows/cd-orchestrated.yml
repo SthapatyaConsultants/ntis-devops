@@ -144,6 +144,8 @@ jobs:
         if (Get-Website | Where-Object { $_.Name -eq "$env:API_SITE" }) {
           Stop-WebSite -Name "$env:API_SITE"
           Write-Host "API stopped"
+        } else {
+          Write-Host "API site not found"
         }
 
     - name: Stop UI Service
@@ -155,19 +157,37 @@ jobs:
           Write-Host "UI service stopped"
         }
 
-    # 💾 7. Backup
+    # 💾 7. BACKUP
     - name: Backup API & UI
       shell: pwsh
       run: |
-        $t = Get-Date -Format yyyyMMddHHmmss
+        $date = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+
+        $tenant = "$env:TENANT_NAME"
+        $envName = "$env:ENV_NAME"
+
+        $backupRoot = "C:\Backup\$tenant\$envName"
+
+        $apiBackupPath = "$backupRoot\api\$date"
+        $uiBackupPath  = "$backupRoot\ui\$date"
+
+        New-Item -ItemType Directory -Force -Path $apiBackupPath | Out-Null
+        New-Item -ItemType Directory -Force -Path $uiBackupPath | Out-Null
+
+        Write-Host "Backup Path API: $apiBackupPath"
+        Write-Host "Backup Path UI: $uiBackupPath"
 
         if (Test-Path "$env:API_PATH") {
-          robocopy "$env:API_PATH" "C:\Backup\api_$t" /MIR
+          robocopy "$env:API_PATH" "$apiBackupPath" /MIR
         }
 
         if (Test-Path "$env:UI_PATH") {
-          robocopy "$env:UI_PATH" "C:\Backup\ui_$t" /MIR
+          robocopy "$env:UI_PATH" "$uiBackupPath" /MIR
         }
+
+        # Cleanup old backups (keep last 5)
+        Get-ChildItem "$backupRoot\api" | Sort-Object Name -Descending | Select-Object -Skip 5 | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Get-ChildItem "$backupRoot\ui" | Sort-Object Name -Descending | Select-Object -Skip 5 | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
         exit 0
 
