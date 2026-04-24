@@ -1,4 +1,4 @@
-name: Full Deployment Pipeline
+name: Full Deployment Pipeline 
 
 on:
   workflow_dispatch:
@@ -18,228 +18,249 @@ env:
   CONNECTION_STRING: ${{ secrets.PACKAGE_CONNECTION_STRING }}
 
 jobs:
-  deploy:
+
+  # 🔹 1. PREPARE (Parse URL + Setup)
+  prepare:
+    name: 🔹 Prepare Environment
+    runs-on: [self-hosted, cd, ntis]
+
+    outputs:
+      ENV_NAME: ${{ steps.parse.outputs.env }}
+      TENANT_NAME: ${{ steps.parse.outputs.tenant }}
+      API_SITE: ${{ steps.parse.outputs.api_site }}
+      API_PATH: ${{ steps.parse.outputs.api_path }}
+      UI_PATH: ${{ steps.parse.outputs.ui_path }}
+      UI_SERVICE: ${{ steps.parse.outputs.ui_service }}
+
+    steps:
+      - name: Parse URL
+        id: parse
+        shell: pwsh
+        run: |
+          $url="${{ github.event.inputs.url }}".ToLower()
+          $sub = $url.Split('.')[0]
+
+          if ($sub -match "-dev$") {
+            $envName="dev"
+            $tenantName = $sub -replace "-dev$",""
+          }
+          elseif ($sub -match "-qa$") {
+            $envName="qa"
+            $tenantName = $sub -replace "-qa$",""
+          }
+          else {
+            $envName="prod"
+            $tenantName = $sub
+          }
+
+          if ($envName -eq "prod") {
+            $apiSite = "$tenantName-api"
+            $apiPath = "E:\WebApp\$tenantName-api"
+            $uiPath  = "E:\WebApp\$tenantName"
+            $uiService = "$tenantName-ui"
+          } else {
+            $apiSite = "$tenantName-api-$envName"
+            $apiPath = "E:\WebApp\$tenantName-api-$envName"
+            $uiPath  = "E:\WebApp\$tenantName-$envName"
+            $uiService = "$tenantName-ui-$envName"
+          }
+
+          echo "env=$envName" >> $env:GITHUB_OUTPUT
+          echo "tenant=$tenantName" >> $env:GITHUB_OUTPUT
+          echo "api_site=$apiSite" >> $env:GITHUB_OUTPUT
+          echo "api_path=$apiPath" >> $env:GITHUB_OUTPUT
+          echo "ui_path=$uiPath" >> $env:GITHUB_OUTPUT
+          echo "ui_service=$uiService" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Tenant: $tenantName"
+          Write-Host "Environment: $envName"
+
+  # 🔹 2. DOWNLOAD PACKAGES
+  download:
+    name: 📦 Download Packages
+    needs: prepare
     runs-on: [self-hosted, cd, ntis]
 
     steps:
+      - name: Prepare directories
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "C:\Deploy" | Out-Null
 
-    # 🔹 1. Parse URL + Multi-Env Mapping
-    - name: Parse URL
-      shell: pwsh
-      run: |
-        $url="${{ github.event.inputs.url }}".ToLower()
-        $sub = $url.Split('.')[0]
+      - name: Download UI
+        shell: pwsh
+        run: |
+          $v="${{ github.event.inputs.version }}"
+          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+          $file="ntis-ui-$envName-v$v.zip"
+          $blob="$envName/$v/ui/$file"
 
-        if ($sub -match "-dev$") {
-          $envName="dev"
-          $tenantName = $sub -replace "-dev$",""
-        }
-        elseif ($sub -match "-qa$") {
-          $envName="qa"
-          $tenantName = $sub -replace "-qa$",""
-        }
-        else {
-          $envName="prod"
-          $tenantName = $sub
-        }
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
+            --name "$blob" `
+            --file "C:\Deploy\ui.zip" `
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
 
-        if ($envName -eq "prod") {
-          $apiSite = "$tenantName-api"
-          $apiPath = "E:\WebApp\$tenantName-api"
-          $uiPath  = "E:\WebApp\$tenantName"
-          $uiService = "$tenantName-ui"
-        } else {
-          $apiSite = "$tenantName-api-$envName"
-          $apiPath = "E:\WebApp\$tenantName-api-$envName"
-          $uiPath  = "E:\WebApp\$tenantName-$envName"
-          $uiService = "$tenantName-ui-$envName"
-        }
+      - name: Download API
+        shell: pwsh
+        run: |
+          $v="${{ github.event.inputs.version }}"
+          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+          $file="ntis-platform-api-$envName-v$v.zip"
+          $blob="$envName/$v/platform/$file"
 
-        echo "ENV_NAME=$envName" >> $env:GITHUB_ENV
-        echo "TENANT_NAME=$tenantName" >> $env:GITHUB_ENV
-        echo "API_SITE=$apiSite" >> $env:GITHUB_ENV
-        echo "API_PATH=$apiPath" >> $env:GITHUB_ENV
-        echo "UI_PATH=$uiPath" >> $env:GITHUB_ENV
-        echo "UI_SERVICE=$uiService" >> $env:GITHUB_ENV
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
+            --name "$blob" `
+            --file "C:\Deploy\api.zip" `
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
 
-        Write-Host "Tenant: $tenantName"
-        Write-Host "Environment: $envName"
-        Write-Host "API Path: $apiPath"
-        Write-Host "UI Path: $uiPath"
-        Write-Host "UI Service: $uiService"
+      - name: Download DB
+        shell: pwsh
+        run: |
+          $v="${{ github.event.inputs.version }}"
+          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+          $file="DatabaseManager-v$v.zip"
+          $blob="$envName/$v/database-manager/$file"
 
-    # 🔹 2. Checkout Config Repo
-    - name: Checkout Config Repo
-      uses: actions/checkout@v4
-      with:
-        repository: SthapatyaConsultants/ntis-configs
-        token: ${{ secrets.CONFIG_REPO_TOKEN }}
-        path: ntis-configs
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
+            --name "$blob" `
+            --file "C:\Deploy\db.zip" `
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
 
-    # 🔹 3. Prepare directories
-    - name: Prepare directories
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force -Path "C:\Deploy" | Out-Null
-        New-Item -ItemType Directory -Force -Path "C:\Backup" | Out-Null
-        New-Item -ItemType Directory -Force -Path "$env:API_PATH" | Out-Null
-        New-Item -ItemType Directory -Force -Path "$env:UI_PATH" | Out-Null
+      - name: Extract Packages
+        shell: pwsh
+        run: |
+          Expand-Archive "C:\Deploy\ui.zip" -DestinationPath "C:\Deploy\ui" -Force
+          Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
+          Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
 
-    # 🔹 4. Download Packages
-    - name: Download UI
-      shell: pwsh
-      run: |
-        $v="${{ github.event.inputs.version }}"
-        $file="ntis-ui-$env:ENV_NAME-v$v.zip"
-        $blob="$env:ENV_NAME/$v/ui/$file"
+  # 🔹 3. STOP + BACKUP
+  stop-backup:
+    name: 🔴 Stop Services & Backup
+    needs: [prepare, download]
+    runs-on: [self-hosted, cd, ntis]
 
-        az storage blob download `
-          --container-name "${{ env.PACKAGE_CONTAINER }}" `
-          --name "$blob" `
-          --file "C:\Deploy\ui.zip" `
-          --connection-string "${{ env.CONNECTION_STRING }}" `
-          --overwrite
+    steps:
+      - name: Stop API (Force)
+        shell: pwsh
+        run: |
+          Import-Module WebAdministration
+          $site="${{ needs.prepare.outputs.API_SITE }}"
 
-    - name: Download API
-      shell: pwsh
-      run: |
-        $v="${{ github.event.inputs.version }}"
-        $file="ntis-platform-api-$env:ENV_NAME-v$v.zip"
-        $blob="$env:ENV_NAME/$v/platform/$file"
+          if (Get-Website | Where-Object { $_.Name -eq $site }) {
+            Stop-Website -Name $site
+            Stop-WebAppPool -Name $site -ErrorAction SilentlyContinue
+            Write-Host "API stopped: $site"
+          } else {
+            Write-Host "API site not found"
+          }
 
-        az storage blob download `
-          --container-name "${{ env.PACKAGE_CONTAINER }}" `
-          --name "$blob" `
-          --file "C:\Deploy\api.zip" `
-          --connection-string "${{ env.CONNECTION_STRING }}" `
-          --overwrite
+      - name: Stop UI Service
+        shell: pwsh
+        run: |
+          $svc="${{ needs.prepare.outputs.UI_SERVICE }}"
+          $service = Get-Service -Name $svc -ErrorAction SilentlyContinue
 
-    - name: Download DB
-      shell: pwsh
-      run: |
-        $v="${{ github.event.inputs.version }}"
-        $file="DatabaseManager-v$v.zip"
-        $blob="$env:ENV_NAME/$v/database-manager/$file"
+          if ($service -and $service.Status -ne "Stopped") {
+            sc stop $svc
+            Write-Host "UI stopped: $svc"
+          }
 
-        az storage blob download `
-          --container-name "${{ env.PACKAGE_CONTAINER }}" `
-          --name "$blob" `
-          --file "C:\Deploy\db.zip" `
-          --connection-string "${{ env.CONNECTION_STRING }}" `
-          --overwrite
+      - name: Backup API & UI
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "C:\Backup" | Out-Null
 
-    # 🔹 5. Extract
-    - name: Extract Packages
-      shell: pwsh
-      run: |
-        Expand-Archive "C:\Deploy\ui.zip" -DestinationPath "C:\Deploy\ui" -Force
-        Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
-        Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
+          $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
+          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+          $date=Get-Date -Format "yyyy-MM-dd"
+          $time=Get-Date -Format "HH-mm-ss"
 
-    # 🔴 6. Stop Services
-    - name: Stop API
-      shell: pwsh
-      run: |
-        Import-Module WebAdministration
-        if (Get-Website | Where-Object { $_.Name -eq "$env:API_SITE" }) {
-          Stop-WebSite -Name "$env:API_SITE"
-          Write-Host "API stopped"
-        } else {
-          Write-Host "API site not found"
-        }
+          $base="C:\Backup\$tenant\$envName\$date\$time"
+          $apiBackup="$base\api"
+          $uiBackup="$base\ui"
 
-    - name: Stop UI Service
-      shell: pwsh
-      run: |
-        $svc = Get-Service -Name "$env:UI_SERVICE" -ErrorAction SilentlyContinue
-        if ($svc -and $svc.Status -ne "Stopped") {
-          sc stop $env:UI_SERVICE
-          Write-Host "UI service stopped"
-        }
+          New-Item -ItemType Directory -Force -Path $apiBackup | Out-Null
+          New-Item -ItemType Directory -Force -Path $uiBackup | Out-Null
 
-    # 💾 7. BACKUP
-    - name: Backup API & UI
-      shell: pwsh
-      run: |
-        $date = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+          robocopy "${{ needs.prepare.outputs.API_PATH }}" $apiBackup /MIR
+          robocopy "${{ needs.prepare.outputs.UI_PATH }}" $uiBackup /MIR
 
-        $tenant = "$env:TENANT_NAME"
-        $envName = "$env:ENV_NAME"
+          exit 0
 
-        $backupRoot = "C:\Backup\$tenant\$envName"
+  # 🔹 4. DEPLOY
+  deploy:
+    name: 🚀 Deploy Application
+    needs: stop-backup
+    runs-on: [self-hosted, cd, ntis]
 
-        $apiBackupPath = "$backupRoot\api\$date"
-        $uiBackupPath  = "$backupRoot\ui\$date"
+    steps:
+      - name: Deploy API
+        shell: pwsh
+        run: |
+          robocopy "C:\Deploy\api" "${{ needs.prepare.outputs.API_PATH }}" /MIR /XF "appsettings*.json"
+          if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-        New-Item -ItemType Directory -Force -Path $apiBackupPath | Out-Null
-        New-Item -ItemType Directory -Force -Path $uiBackupPath | Out-Null
+      - name: Deploy UI
+        shell: pwsh
+        run: |
+          robocopy "C:\Deploy\ui" "${{ needs.prepare.outputs.UI_PATH }}" /MIR /XF "web.config"
+          if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
 
-        Write-Host "Backup Path API: $apiBackupPath"
-        Write-Host "Backup Path UI: $uiBackupPath"
+  # 🔹 5. CONFIG + DB
+  configure:
+    name: 🧠 Apply Config & DB Migration
+    needs: deploy
+    runs-on: [self-hosted, cd, ntis]
 
-        if (Test-Path "$env:API_PATH") {
-          robocopy "$env:API_PATH" "$apiBackupPath" /MIR
-        }
+    steps:
+      - name: Checkout Config Repo
+        uses: actions/checkout@v4
+        with:
+          repository: SthapatyaConsultants/ntis-configs
+          token: ${{ secrets.CONFIG_REPO_TOKEN }}
+          path: ntis-configs
 
-        if (Test-Path "$env:UI_PATH") {
-          robocopy "$env:UI_PATH" "$uiBackupPath" /MIR
-        }
+      - name: Apply Configs
+        shell: pwsh
+        run: |
+          $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
+          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+          $base="ntis-configs/tenants/$tenant/$envName"
 
-        # Cleanup old backups (keep last 5)
-        Get-ChildItem "$backupRoot\api" | Sort-Object Name -Descending | Select-Object -Skip 5 | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-        Get-ChildItem "$backupRoot\ui" | Sort-Object Name -Descending | Select-Object -Skip 5 | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item "$base/platform/appsettings.Api.Production.json" "${{ needs.prepare.outputs.API_PATH }}\appsettings.Production.json" -Force
 
-        exit 0
+          if (Test-Path "$base/platform/appsettings.Worker.Production.json") {
+            Copy-Item "$base/platform/appsettings.Worker.Production.json" "${{ needs.prepare.outputs.API_PATH }}\appsettings.Worker.json" -Force
+          }
 
-    # 🚀 8. Deploy
-    - name: Deploy API
-      shell: pwsh
-      run: |
-        robocopy "C:\Deploy\api" "$env:API_PATH" /MIR /XF "appsettings*.json"
-        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
+          Copy-Item "$base/database-manager/appsettings.json" "C:\Deploy\db\win-x64\appsettings.json" -Force
+          Copy-Item "$base/ui/.env.production" "${{ needs.prepare.outputs.UI_PATH }}\.env" -Force
 
-    - name: Deploy UI
-      shell: pwsh
-      run: |
-        robocopy "C:\Deploy\ui" "$env:UI_PATH" /MIR /XF "web.config"
-        if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
+      - name: Run DB Migration
+        shell: pwsh
+        run: |
+          cmd /c "echo C | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
 
-    # 🧠 9. Apply Configs
-    - name: Apply Configs
-      shell: pwsh
-      run: |
-        $base="ntis-configs/tenants/$env:TENANT_NAME/$env:ENV_NAME"
+  # 🔹 6. START SERVICES
+  start:
+    name: 🟢 Start Services
+    needs: configure
+    runs-on: [self-hosted, cd, ntis]
 
-        Copy-Item "$base/platform/appsettings.Api.Production.json" "$env:API_PATH\appsettings.Production.json" -Force
+    steps:
+      - name: Start API
+        shell: pwsh
+        run: |
+          Import-Module WebAdministration
+          Start-Website -Name "${{ needs.prepare.outputs.API_SITE }}"
 
-        if (Test-Path "$base/platform/appsettings.Worker.Production.json") {
-          Copy-Item "$base/platform/appsettings.Worker.Production.json" "$env:API_PATH\appsettings.Worker.json" -Force
-        }
-
-        Copy-Item "$base/database-manager/appsettings.json" "C:\Deploy\db\win-x64\appsettings.json" -Force
-        Copy-Item "$base/ui/.env.production" "$env:UI_PATH\.env" -Force
-
-    # 🚀 10. DB Migration
-    - name: Run DB Migration
-      shell: pwsh
-      run: |
-        cmd /c "echo C | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
-
-    # 🟢 11. Start Services
-    - name: Start API
-      shell: pwsh
-      run: |
-        Import-Module WebAdministration
-        if (Get-Website | Where-Object { $_.Name -eq "$env:API_SITE" }) {
-          Start-WebSite -Name "$env:API_SITE"
-        }
-
-    - name: Start UI Service
-      shell: pwsh
-      run: |
-        $svc = Get-Service -Name "$env:UI_SERVICE" -ErrorAction SilentlyContinue
-        if ($svc) {
-          sc start $env:UI_SERVICE
-        } else {
-          Write-Host "UI Service not found"
-        }
+      - name: Start UI Service
+        shell: pwsh
+        run: |
+          sc start "${{ needs.prepare.outputs.UI_SERVICE }}"
