@@ -1,4 +1,4 @@
-name: Full Deployment Pipeline 
+name: Full Deployment Pipeline
 
 on:
   workflow_dispatch:
@@ -21,6 +21,7 @@ jobs:
 
 # 🔹 1. PREPARE
   prepare:
+    name: 🔹 Prepare
     runs-on: [self-hosted, cd, ntis]
 
     outputs:
@@ -36,6 +37,7 @@ jobs:
         id: parse
         shell: pwsh
         run: |
+
           $url="${{ github.event.inputs.url }}".ToLower()
           $sub = $url.Split('.')[0]
 
@@ -52,14 +54,22 @@ jobs:
             $tenantName = $sub
           }
 
+          # PROD
           if ($envName -eq "prod") {
+
             $apiSite = "$tenantName-api"
             $apiPath = "E:\WebApp\$tenantName-api"
+
             $uiPath  = "E:\WebApp\$tenantName"
             $uiService = "$tenantName-ui"
-          } else {
+
+          }
+          else {
+
+            # QA / DEV
             $apiSite = "$tenantName-api-$envName"
             $apiPath = "E:\WebApp\$tenantName-api-$envName"
+
             $uiPath  = "E:\WebApp\$tenantName-$envName"
             $uiService = "$tenantName-ui-$envName"
           }
@@ -71,123 +81,256 @@ jobs:
           echo "ui_path=$uiPath" >> $env:GITHUB_OUTPUT
           echo "ui_service=$uiService" >> $env:GITHUB_OUTPUT
 
+          Write-Host "Environment : $envName"
+          Write-Host "Tenant      : $tenantName"
+
+          Write-Host "API Site    : $apiSite"
+          Write-Host "API Path    : $apiPath"
+
+          Write-Host "UI Service  : $uiService"
+          Write-Host "UI Path     : $uiPath"
 
 # 🔹 2. DOWNLOAD
   download:
+    name: 📦 Download Packages
     needs: prepare
     runs-on: [self-hosted, cd, ntis]
 
     steps:
-      - name: Prepare folders
+
+      - name: Prepare Deploy Folder
         shell: pwsh
         run: |
+          Remove-Item "C:\Deploy" -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path "C:\Deploy" | Out-Null
 
-      - name: Download & Extract
+      - name: Download Packages
         shell: pwsh
         run: |
+
           $v="${{ github.event.inputs.version }}"
           $envName="${{ needs.prepare.outputs.ENV_NAME }}"
 
-          az storage blob download --container-name "${{ env.PACKAGE_CONTAINER }}" `
+          # UI
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
             --name "$envName/$v/ui/ntis-ui-$envName-v$v.zip" `
             --file "C:\Deploy\ui.zip" `
-            --connection-string "${{ env.CONNECTION_STRING }}" --overwrite
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
 
-          az storage blob download --container-name "${{ env.PACKAGE_CONTAINER }}" `
+          # API
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
             --name "$envName/$v/platform/ntis-platform-api-$envName-v$v.zip" `
             --file "C:\Deploy\api.zip" `
-            --connection-string "${{ env.CONNECTION_STRING }}" --overwrite
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
 
-          az storage blob download --container-name "${{ env.PACKAGE_CONTAINER }}" `
+          # DB
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
             --name "$envName/$v/database-manager/DatabaseManager-v$v.zip" `
             --file "C:\Deploy\db.zip" `
-            --connection-string "${{ env.CONNECTION_STRING }}" --overwrite
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
 
-          Expand-Archive "C:\Deploy\ui.zip" -DestinationPath "C:\Deploy\ui" -Force
-          Expand-Archive "C:\Deploy\api.zip" -DestinationPath "C:\Deploy\api" -Force
-          Expand-Archive "C:\Deploy\db.zip" -DestinationPath "C:\Deploy\db" -Force
+      - name: Extract Packages
+        shell: pwsh
+        run: |
+
+          Expand-Archive "C:\Deploy\ui.zip" `
+            -DestinationPath "C:\Deploy\ui" -Force
+
+          Expand-Archive "C:\Deploy\api.zip" `
+            -DestinationPath "C:\Deploy\api" -Force
+
+          Expand-Archive "C:\Deploy\db.zip" `
+            -DestinationPath "C:\Deploy\db" -Force
 
 
 # 🔹 3. STOP + BACKUP
   stop-backup:
+    name: 🛑 Stop Services & Backup
     needs: [prepare, download]
     runs-on: [self-hosted, cd, ntis]
 
     steps:
-      - name: Stop API (Strong)
+
+      - name: Stop API
         shell: pwsh
         run: |
+
           Import-Module WebAdministration
+
           $site="${{ needs.prepare.outputs.API_SITE }}"
 
-          if (Get-Website | Where-Object { $_.Name -eq $site }) {
-            Stop-Website -Name $site
-            Stop-WebAppPool -Name $site -ErrorAction SilentlyContinue
-            Start-Sleep 3
+          Write-Host "Stopping Website : $site"
 
-            if ((Get-Website -Name $site).State -ne "Stopped") {
-              iisreset /stop
+          if (Get-Website | Where-Object { $_.Name -eq $site }) {
+
+            # Stop Website
+            Stop-Website -Name $site
+            Write-Host "Website stopped"
+
+            Start-Sleep 2
+
+            # Stop App Pool
+            if (Test-Path "IIS:\AppPools\$site") {
+
+              Stop-WebAppPool -Name $site
+              Write-Host "AppPool stopped"
+
+            } else {
+
+              Write-Host "AppPool not found"
+
             }
+
+          } else {
+
+            Write-Host "Website not found"
+
           }
 
       - name: Stop UI Service
         shell: pwsh
         run: |
-          $svc="${{ needs.prepare.outputs.UI_SERVICE }}"
-          $service = Get-Service -Name $svc -ErrorAction SilentlyContinue
 
-          if ($service -and $service.Status -ne "Stopped") {
-            sc stop $svc
+          $svc="${{ needs.prepare.outputs.UI_SERVICE }}"
+
+          $service = Get-Service `
+            -Name $svc `
+            -ErrorAction SilentlyContinue
+
+          if ($service) {
+
+            if ($service.Status -ne "Stopped") {
+
+              sc stop $svc
+
+              Start-Sleep 5
+
+              Write-Host "UI Service stopped : $svc"
+
+            }
+
+          } else {
+
+            Write-Host "UI Service not found : $svc"
+
           }
 
-      - name: Backup
+      - name: Backup Existing Files
         shell: pwsh
         run: |
+
           $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
           $envName="${{ needs.prepare.outputs.ENV_NAME }}"
-          $date=Get-Date -Format "yyyy-MM-dd"
-          $time=Get-Date -Format "HH-mm-ss"
 
-          $base="C:\Backup\$tenant\$envName\$date\$time"
+          $date = Get-Date -Format "yyyy-MM-dd"
+          $time = Get-Date -Format "HH-mm-ss"
 
-          robocopy "${{ needs.prepare.outputs.API_PATH }}" "$base\api" /MIR
-          robocopy "${{ needs.prepare.outputs.UI_PATH }}" "$base\ui" /MIR
+          $backupRoot = "C:\Backup\$tenant\$envName\$date\$time"
+
+          $apiBackup = "$backupRoot\api"
+          $uiBackup  = "$backupRoot\ui"
+
+          New-Item -ItemType Directory -Force -Path $apiBackup | Out-Null
+          New-Item -ItemType Directory -Force -Path $uiBackup | Out-Null
+
+          Write-Host "Backup Path : $backupRoot"
+
+          robocopy `
+            "${{ needs.prepare.outputs.API_PATH }}" `
+            $apiBackup `
+            /MIR
+
+          robocopy `
+            "${{ needs.prepare.outputs.UI_PATH }}" `
+            $uiBackup `
+            /MIR
 
           exit 0
 
 
 # 🔹 4. DEPLOY
   deploy:
+    name: 🚀 Deploy
     needs: [prepare, stop-backup]
     runs-on: [self-hosted, cd, ntis]
 
     steps:
+
       - name: Validate Paths
         shell: pwsh
         run: |
-          if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.API_PATH }}")) { exit 1 }
-          if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.UI_PATH }}")) { exit 1 }
+
+          if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.API_PATH }}")) {
+            Write-Error "API_PATH missing"
+            exit 1
+          }
+
+          if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.UI_PATH }}")) {
+            Write-Error "UI_PATH missing"
+            exit 1
+          }
+
+      - name: Create Target Folders
+        shell: pwsh
+        run: |
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "${{ needs.prepare.outputs.API_PATH }}" | Out-Null
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "${{ needs.prepare.outputs.UI_PATH }}" | Out-Null
 
       - name: Deploy API
         shell: pwsh
         run: |
-          robocopy "C:\Deploy\api" "${{ needs.prepare.outputs.API_PATH }}" /MIR /XF "appsettings*.json"
-          if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
+
+          robocopy `
+            "C:\Deploy\api" `
+            "${{ needs.prepare.outputs.API_PATH }}" `
+            /MIR `
+            /XF "appsettings*.json"
+
+          if ($LASTEXITCODE -le 3) {
+            exit 0
+          } else {
+            exit $LASTEXITCODE
+          }
 
       - name: Deploy UI
         shell: pwsh
         run: |
-          robocopy "C:\Deploy\ui" "${{ needs.prepare.outputs.UI_PATH }}" /MIR /XF "web.config"
-          if ($LASTEXITCODE -le 3) { exit 0 } else { exit $LASTEXITCODE }
+
+          robocopy `
+            "C:\Deploy\ui" `
+            "${{ needs.prepare.outputs.UI_PATH }}" `
+            /MIR `
+            /XF "web.config"
+
+          if ($LASTEXITCODE -le 3) {
+            exit 0
+          } else {
+            exit $LASTEXITCODE
+          }
 
 
-# 🔹 5. CONFIG
+# 🔹 5. CONFIGURE
   configure:
+    name: ⚙️ Configure & DB Migration
     needs: [prepare, deploy]
     runs-on: [self-hosted, cd, ntis]
 
     steps:
+
       - name: Checkout Config Repo
         uses: actions/checkout@v4
         with:
@@ -195,42 +338,157 @@ jobs:
           token: ${{ secrets.CONFIG_REPO_TOKEN }}
           path: ntis-configs
 
-      - name: Apply Configs
+      - name: Apply Config Files
         shell: pwsh
         run: |
-          $base="ntis-configs/tenants/${{ needs.prepare.outputs.TENANT_NAME }}/${{ needs.prepare.outputs.ENV_NAME }}"
 
-          Copy-Item "$base/platform/appsettings.Api.Production.json" "${{ needs.prepare.outputs.API_PATH }}\appsettings.Production.json" -Force
-          Copy-Item "$base/ui/.env.production" "${{ needs.prepare.outputs.UI_PATH }}\.env" -Force
-          Copy-Item "$base/database-manager/appsettings.json" "C:\Deploy\db\win-x64\appsettings.json" -Force
+          $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
+          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+
+          $base="ntis-configs/tenants/$tenant/$envName"
+
+          # API Config
+          Copy-Item `
+            "$base/platform/appsettings.Api.Production.json" `
+            "${{ needs.prepare.outputs.API_PATH }}\appsettings.Production.json" `
+            -Force
+
+          # Worker Config
+          if (Test-Path "$base/platform/appsettings.Worker.Production.json") {
+
+            Copy-Item `
+              "$base/platform/appsettings.Worker.Production.json" `
+              "${{ needs.prepare.outputs.API_PATH }}\appsettings.Worker.json" `
+              -Force
+          }
+
+          # UI Config
+          Copy-Item `
+            "$base/ui/.env.production" `
+            "${{ needs.prepare.outputs.UI_PATH }}\.env" `
+            -Force
+
+          # DB Config
+          Copy-Item `
+            "$base/database-manager/appsettings.json" `
+            "C:\Deploy\db\win-x64\appsettings.json" `
+            -Force
 
       - name: Run DB Migration
         shell: pwsh
         run: |
-          cmd /c "echo C | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
+
+          # U = Upgrade Existing DB
+          cmd /c "echo U | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
 
 
 # 🔹 6. START
   start:
+    name: 🟢 Start Services
     needs: [prepare, configure]
     runs-on: [self-hosted, cd, ntis]
 
     steps:
+
       - name: Start API
         shell: pwsh
         run: |
+
           Import-Module WebAdministration
+
           $site="${{ needs.prepare.outputs.API_SITE }}"
-          if ($site) { Start-Website -Name $site }
 
-      - name: Start UI
-        shell: pwsh
-        run: |
-          $svc="${{ needs.prepare.outputs.UI_SERVICE }}"
-
-          if ([string]::IsNullOrWhiteSpace($svc)) {
-            Write-Error "UI_SERVICE missing ❌"
+          if ([string]::IsNullOrWhiteSpace($site)) {
+            Write-Error "API_SITE missing"
             exit 1
           }
 
-          sc start $svc
+          Write-Host "Starting AppPool : $site"
+
+          # Start App Pool
+          if (Test-Path "IIS:\AppPools\$site") {
+
+            $poolState = (Get-WebAppPoolState -Name $site).Value
+
+            if ($poolState -ne "Started") {
+
+              Start-WebAppPool -Name $site
+              Write-Host "AppPool started"
+
+            } else {
+
+              Write-Host "AppPool already running"
+
+            }
+
+          } else {
+
+            Write-Error "AppPool not found : $site"
+            exit 1
+
+          }
+
+          Start-Sleep 3
+
+          Write-Host "Starting Website : $site"
+
+          # Start Website
+          if (Get-Website | Where-Object { $_.Name -eq $site }) {
+
+            $siteState = (Get-Website -Name $site).State
+
+            if ($siteState -ne "Started") {
+
+              Start-Website -Name $site
+              Write-Host "Website started"
+
+            } else {
+
+              Write-Host "Website already running"
+
+            }
+
+          } else {
+
+            Write-Error "Website not found : $site"
+            exit 1
+
+          }
+
+      - name: Start UI Service
+        shell: pwsh
+        run: |
+
+          $svc="${{ needs.prepare.outputs.UI_SERVICE }}"
+
+          if ([string]::IsNullOrWhiteSpace($svc)) {
+
+            Write-Error "UI_SERVICE missing"
+            exit 1
+
+          }
+
+          $service = Get-Service `
+            -Name $svc `
+            -ErrorAction SilentlyContinue
+
+          if ($service) {
+
+            if ($service.Status -ne "Running") {
+
+              sc start $svc
+
+              Write-Host "UI Service started : $svc"
+
+            } else {
+
+              Write-Host "UI Service already running"
+
+            }
+
+          } else {
+
+            Write-Error "UI Service not found : $svc"
+            exit 1
+
+          }
