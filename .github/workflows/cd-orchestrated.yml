@@ -33,6 +33,7 @@ jobs:
       UI_SERVICE: ${{ steps.parse.outputs.ui_service }}
 
     steps:
+
       - name: Parse URL
         id: parse
         shell: pwsh
@@ -42,16 +43,22 @@ jobs:
           $sub = $url.Split('.')[0]
 
           if ($sub -match "-dev$") {
+
             $envName="dev"
             $tenantName = $sub -replace "-dev$",""
+
           }
           elseif ($sub -match "-qa$") {
+
             $envName="qa"
             $tenantName = $sub -replace "-qa$",""
+
           }
           else {
+
             $envName="prod"
             $tenantName = $sub
+
           }
 
           # PROD
@@ -72,6 +79,7 @@ jobs:
 
             $uiPath  = "E:\WebApp\$tenantName-$envName"
             $uiService = "$tenantName-ui-$envName"
+
           }
 
           echo "env=$envName" >> $env:GITHUB_OUTPUT
@@ -90,6 +98,7 @@ jobs:
           Write-Host "UI Service  : $uiService"
           Write-Host "UI Path     : $uiPath"
 
+
 # 🔹 2. DOWNLOAD
   download:
     name: 📦 Download Packages
@@ -101,8 +110,16 @@ jobs:
       - name: Prepare Deploy Folder
         shell: pwsh
         run: |
-          Remove-Item "C:\Deploy" -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path "C:\Deploy" | Out-Null
+
+          Remove-Item "C:\Deploy" `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "C:\Deploy" | Out-Null
 
       - name: Download Packages
         shell: pwsh
@@ -139,14 +156,20 @@ jobs:
         shell: pwsh
         run: |
 
-          Expand-Archive "C:\Deploy\ui.zip" `
-            -DestinationPath "C:\Deploy\ui" -Force
+          Expand-Archive `
+            "C:\Deploy\ui.zip" `
+            -DestinationPath "C:\Deploy\ui" `
+            -Force
 
-          Expand-Archive "C:\Deploy\api.zip" `
-            -DestinationPath "C:\Deploy\api" -Force
+          Expand-Archive `
+            "C:\Deploy\api.zip" `
+            -DestinationPath "C:\Deploy\api" `
+            -Force
 
-          Expand-Archive "C:\Deploy\db.zip" `
-            -DestinationPath "C:\Deploy\db" -Force
+          Expand-Archive `
+            "C:\Deploy\db.zip" `
+            -DestinationPath "C:\Deploy\db" `
+            -Force
 
 
 # 🔹 3. STOP + BACKUP
@@ -173,23 +196,58 @@ jobs:
             Stop-Website -Name $site
             Write-Host "Website stopped"
 
-            Start-Sleep 2
+            Start-Sleep 3
 
-            # Stop App Pool
+            # Stop AppPool
             if (Test-Path "IIS:\AppPools\$site") {
 
               Stop-WebAppPool -Name $site
               Write-Host "AppPool stopped"
 
-            } else {
+            }
+            else {
 
-              Write-Host "AppPool not found"
+              Write-Error "AppPool not found : $site"
+              exit 1
 
             }
 
-          } else {
+            # Wait for shutdown
+            Start-Sleep 10
 
-            Write-Host "Website not found"
+            # Kill ONLY matching apppool worker process
+            $wp = Get-WmiObject Win32_Process `
+              | Where-Object {
+
+                  $_.Name -eq "w3wp.exe" -and
+                  $_.CommandLine -match "$site"
+
+                }
+
+            if ($wp) {
+
+              Write-Host "Killing remaining worker process for : $site"
+
+              $wp | ForEach-Object {
+
+                Stop-Process -Id $_.ProcessId -Force
+
+              }
+
+            }
+            else {
+
+              Write-Host "No remaining worker process"
+
+            }
+
+            Write-Host "API fully stopped"
+
+          }
+          else {
+
+            Write-Error "Website not found : $site"
+            exit 1
 
           }
 
@@ -214,10 +272,17 @@ jobs:
               Write-Host "UI Service stopped : $svc"
 
             }
+            else {
 
-          } else {
+              Write-Host "UI Service already stopped"
 
-            Write-Host "UI Service not found : $svc"
+            }
+
+          }
+          else {
+
+            Write-Error "UI Service not found : $svc"
+            exit 1
 
           }
 
@@ -236,20 +301,31 @@ jobs:
           $apiBackup = "$backupRoot\api"
           $uiBackup  = "$backupRoot\ui"
 
-          New-Item -ItemType Directory -Force -Path $apiBackup | Out-Null
-          New-Item -ItemType Directory -Force -Path $uiBackup | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $apiBackup | Out-Null
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $uiBackup | Out-Null
 
           Write-Host "Backup Path : $backupRoot"
 
           robocopy `
             "${{ needs.prepare.outputs.API_PATH }}" `
             $apiBackup `
-            /MIR
+            /MIR `
+            /R:2 `
+            /W:2
 
           robocopy `
             "${{ needs.prepare.outputs.UI_PATH }}" `
             $uiBackup `
-            /MIR
+            /MIR `
+            /R:2 `
+            /W:2
 
           exit 0
 
@@ -267,13 +343,17 @@ jobs:
         run: |
 
           if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.API_PATH }}")) {
+
             Write-Error "API_PATH missing"
             exit 1
+
           }
 
           if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.UI_PATH }}")) {
+
             Write-Error "UI_PATH missing"
             exit 1
+
           }
 
       - name: Create Target Folders
@@ -298,12 +378,20 @@ jobs:
             "C:\Deploy\api" `
             "${{ needs.prepare.outputs.API_PATH }}" `
             /MIR `
+            /R:3 `
+            /W:5 `
             /XF "appsettings*.json"
 
           if ($LASTEXITCODE -le 3) {
+
+            Write-Host "API deployed successfully"
             exit 0
-          } else {
+
+          }
+          else {
+
             exit $LASTEXITCODE
+
           }
 
       - name: Deploy UI
@@ -314,12 +402,20 @@ jobs:
             "C:\Deploy\ui" `
             "${{ needs.prepare.outputs.UI_PATH }}" `
             /MIR `
+            /R:3 `
+            /W:5 `
             /XF "web.config"
 
           if ($LASTEXITCODE -le 3) {
+
+            Write-Host "UI deployed successfully"
             exit 0
-          } else {
+
+          }
+          else {
+
             exit $LASTEXITCODE
+
           }
 
 
@@ -360,6 +456,7 @@ jobs:
               "$base/platform/appsettings.Worker.Production.json" `
               "${{ needs.prepare.outputs.API_PATH }}\appsettings.Worker.json" `
               -Force
+
           }
 
           # UI Config
@@ -378,7 +475,7 @@ jobs:
         shell: pwsh
         run: |
 
-          # U = Upgrade Existing DB
+          # U = Upgrade Existing Database
           cmd /c "echo U | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
 
 
@@ -399,13 +496,15 @@ jobs:
           $site="${{ needs.prepare.outputs.API_SITE }}"
 
           if ([string]::IsNullOrWhiteSpace($site)) {
+
             Write-Error "API_SITE missing"
             exit 1
+
           }
 
           Write-Host "Starting AppPool : $site"
 
-          # Start App Pool
+          # Start AppPool
           if (Test-Path "IIS:\AppPools\$site") {
 
             $poolState = (Get-WebAppPoolState -Name $site).Value
@@ -415,20 +514,22 @@ jobs:
               Start-WebAppPool -Name $site
               Write-Host "AppPool started"
 
-            } else {
+            }
+            else {
 
               Write-Host "AppPool already running"
 
             }
 
-          } else {
+          }
+          else {
 
             Write-Error "AppPool not found : $site"
             exit 1
 
           }
 
-          Start-Sleep 3
+          Start-Sleep 5
 
           Write-Host "Starting Website : $site"
 
@@ -442,13 +543,15 @@ jobs:
               Start-Website -Name $site
               Write-Host "Website started"
 
-            } else {
+            }
+            else {
 
               Write-Host "Website already running"
 
             }
 
-          } else {
+          }
+          else {
 
             Write-Error "Website not found : $site"
             exit 1
@@ -480,13 +583,15 @@ jobs:
 
               Write-Host "UI Service started : $svc"
 
-            } else {
+            }
+            else {
 
               Write-Host "UI Service already running"
 
             }
 
-          } else {
+          }
+          else {
 
             Write-Error "UI Service not found : $svc"
             exit 1
