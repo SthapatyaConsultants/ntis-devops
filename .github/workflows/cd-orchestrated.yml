@@ -35,7 +35,7 @@ jobs:
     steps:
       - name: Parse URL
         id: parse
-        shell: pwsh
+        shell: powershell
         run: |
 
           $url="${{ github.event.inputs.url }}".ToLower()
@@ -81,14 +81,14 @@ jobs:
           echo "ui_path=$uiPath" >> $env:GITHUB_OUTPUT
           echo "ui_service=$uiService" >> $env:GITHUB_OUTPUT
 
+          Write-Host "================================="
           Write-Host "Environment : $envName"
           Write-Host "Tenant      : $tenantName"
-
           Write-Host "API Site    : $apiSite"
           Write-Host "API Path    : $apiPath"
-
           Write-Host "UI Service  : $uiService"
           Write-Host "UI Path     : $uiPath"
+          Write-Host "================================="
 
 
 # 🔹 2. DOWNLOAD
@@ -100,7 +100,7 @@ jobs:
     steps:
 
       - name: Prepare Deploy Folder
-        shell: pwsh
+        shell: powershell
         run: |
 
           Remove-Item "C:\Deploy" `
@@ -114,7 +114,7 @@ jobs:
             -Path "C:\Deploy" | Out-Null
 
       - name: Download Packages
-        shell: pwsh
+        shell: powershell
         run: |
 
           $v="${{ github.event.inputs.version }}"
@@ -145,7 +145,7 @@ jobs:
             --overwrite
 
       - name: Extract Packages
-        shell: pwsh
+        shell: powershell
         run: |
 
           Expand-Archive `
@@ -172,58 +172,50 @@ jobs:
 
     steps:
 
-      - name: Stop API
-        shell: pwsh
+      - name: Stop API Website & AppPool
+        shell: powershell
         run: |
 
-          Import-Module WebAdministration -SkipEditionCheck
+          Import-Module WebAdministration
 
-          $site="${{ needs.prepare.outputs.API_SITE }}"
+          $site = "${{ needs.prepare.outputs.API_SITE }}"
 
-          Write-Host "Website : $site"
+          Write-Host "Stopping Website : $site"
 
-          $website = Get-Website | Where-Object {
-            $_.Name -eq $site
-          }
+          if (Get-Website | Where-Object { $_.Name -eq $site }) {
 
-          if (-not $website) {
+            Stop-Website -Name $site
 
-            Write-Error "Website not found : $site"
-            exit 1
-          }
+            Write-Host "Website stopped"
 
-          # REAL APPPOOL NAME
-          $appPool = $website.applicationPool
+            Start-Sleep 5
 
-          Write-Host "AppPool : $appPool"
+            # Get Actual AppPool Name
+            $pool = (Get-Item "IIS:\Sites\$site").applicationPool
 
-          # STOP WEBSITE
-          Stop-Website -Name $site
+            Write-Host "AppPool : $pool"
 
-          Write-Host "Website stopped"
+            if ($pool) {
 
-          Start-Sleep 3
-
-          # STOP APPPOOL
-          if ($appPool) {
-
-            $poolState = (Get-WebAppPoolState -Name $appPool).Value
-
-            if ($poolState -ne "Stopped") {
-
-              Stop-WebAppPool -Name $appPool
+              Stop-WebAppPool -Name $pool
 
               Write-Host "AppPool stopped"
 
-              Start-Sleep 5
             }
+
+          }
+          else {
+
+            Write-Error "Website not found : $site"
+            exit 1
+
           }
 
       - name: Stop UI Service
-        shell: pwsh
+        shell: powershell
         run: |
 
-          $svc="${{ needs.prepare.outputs.UI_SERVICE }}"
+          $svc = "${{ needs.prepare.outputs.UI_SERVICE }}"
 
           $service = Get-Service `
             -Name $svc `
@@ -238,15 +230,23 @@ jobs:
               Start-Sleep 5
 
               Write-Host "UI Service stopped : $svc"
+
+            }
+            else {
+
+              Write-Host "UI Service already stopped"
+
             }
 
-          } else {
+          }
+          else {
 
             Write-Host "UI Service not found : $svc"
+
           }
 
       - name: Backup Existing Files
-        shell: pwsh
+        shell: powershell
         run: |
 
           $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
@@ -257,8 +257,11 @@ jobs:
 
           $backupRoot = "C:\Backup\$tenant\$envName\$date\$time"
 
-          $apiBackup = "$backupRoot\api"
-          $uiBackup  = "$backupRoot\ui"
+          $apiFolderName = Split-Path "${{ needs.prepare.outputs.API_PATH }}" -Leaf
+          $uiFolderName  = Split-Path "${{ needs.prepare.outputs.UI_PATH }}" -Leaf
+
+          $apiBackup = "$backupRoot\$apiFolderName"
+          $uiBackup  = "$backupRoot\$uiFolderName"
 
           New-Item `
             -ItemType Directory `
@@ -293,24 +296,8 @@ jobs:
 
     steps:
 
-      - name: Validate Paths
-        shell: pwsh
-        run: |
-
-          if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.API_PATH }}")) {
-
-            Write-Error "API_PATH missing"
-            exit 1
-          }
-
-          if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.UI_PATH }}")) {
-
-            Write-Error "UI_PATH missing"
-            exit 1
-          }
-
       - name: Create Target Folders
-        shell: pwsh
+        shell: powershell
         run: |
 
           New-Item `
@@ -324,7 +311,7 @@ jobs:
             -Path "${{ needs.prepare.outputs.UI_PATH }}" | Out-Null
 
       - name: Deploy API
-        shell: pwsh
+        shell: powershell
         run: |
 
           robocopy `
@@ -335,15 +322,18 @@ jobs:
 
           if ($LASTEXITCODE -le 3) {
 
+            Write-Host "API Deploy Success"
             exit 0
 
-          } else {
+          }
+          else {
 
             exit $LASTEXITCODE
+
           }
 
       - name: Deploy UI
-        shell: pwsh
+        shell: powershell
         run: |
 
           robocopy `
@@ -354,11 +344,14 @@ jobs:
 
           if ($LASTEXITCODE -le 3) {
 
+            Write-Host "UI Deploy Success"
             exit 0
 
-          } else {
+          }
+          else {
 
             exit $LASTEXITCODE
+
           }
 
 
@@ -378,7 +371,7 @@ jobs:
           path: ntis-configs
 
       - name: Apply Config Files
-        shell: pwsh
+        shell: powershell
         run: |
 
           $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
@@ -386,13 +379,13 @@ jobs:
 
           $base="ntis-configs/tenants/$tenant/$envName"
 
-          # API CONFIG
+          # API Config
           Copy-Item `
             "$base/platform/appsettings.Api.Production.json" `
             "${{ needs.prepare.outputs.API_PATH }}\appsettings.Production.json" `
             -Force
 
-          # WORKER CONFIG
+          # Worker Config
           if (Test-Path "$base/platform/appsettings.Worker.Production.json") {
 
             Copy-Item `
@@ -401,20 +394,20 @@ jobs:
               -Force
           }
 
-          # UI CONFIG
+          # UI Config
           Copy-Item `
             "$base/ui/.env.production" `
             "${{ needs.prepare.outputs.UI_PATH }}\.env" `
             -Force
 
-          # DB CONFIG
+          # DB Config
           Copy-Item `
             "$base/database-manager/appsettings.json" `
             "C:\Deploy\db\win-x64\appsettings.json" `
             -Force
 
       - name: Run DB Migration
-        shell: pwsh
+        shell: powershell
         run: |
 
           # U = Upgrade Existing DB
@@ -429,74 +422,72 @@ jobs:
 
     steps:
 
-      - name: Start API
-        shell: pwsh
+      - name: Start API Website & AppPool
+        shell: powershell
         run: |
 
-          Import-Module WebAdministration -SkipEditionCheck
+          Import-Module WebAdministration
 
-          $site="${{ needs.prepare.outputs.API_SITE }}"
+          $site = "${{ needs.prepare.outputs.API_SITE }}"
 
-          $website = Get-Website | Where-Object {
-            $_.Name -eq $site
+          Write-Host "Website : $site"
+
+          if (Get-Website | Where-Object { $_.Name -eq $site }) {
+
+            # Get Actual AppPool Name
+            $pool = (Get-Item "IIS:\Sites\$site").applicationPool
+
+            Write-Host "AppPool : $pool"
+
+            if ($pool) {
+
+              $poolState = (Get-WebAppPoolState -Name $pool).Value
+
+              if ($poolState -ne "Started") {
+
+                Start-WebAppPool -Name $pool
+
+                Write-Host "AppPool started"
+
+              }
+              else {
+
+                Write-Host "AppPool already running"
+
+              }
+
+            }
+
+            Start-Sleep 5
+
+            $siteState = (Get-Website -Name $site).State
+
+            if ($siteState -ne "Started") {
+
+              Start-Website -Name $site
+
+              Write-Host "Website started"
+
+            }
+            else {
+
+              Write-Host "Website already running"
+
+            }
+
           }
-
-          if (-not $website) {
+          else {
 
             Write-Error "Website not found : $site"
             exit 1
-          }
 
-          # REAL APPPOOL NAME
-          $appPool = $website.applicationPool
-
-          Write-Host "Website : $site"
-          Write-Host "AppPool : $appPool"
-
-          # START APPPOOL
-          if ($appPool) {
-
-            $poolState = (Get-WebAppPoolState -Name $appPool).Value
-
-            if ($poolState -ne "Started") {
-
-              Start-WebAppPool -Name $appPool
-
-              Write-Host "AppPool started"
-
-              Start-Sleep 5
-
-            } else {
-
-              Write-Host "AppPool already running"
-            }
-          }
-
-          # START WEBSITE
-          $siteState = (Get-Website -Name $site).State
-
-          if ($siteState -ne "Started") {
-
-            Start-Website -Name $site
-
-            Write-Host "Website started"
-
-          } else {
-
-            Write-Host "Website already running"
           }
 
       - name: Start UI Service
-        shell: pwsh
+        shell: powershell
         run: |
 
           $svc="${{ needs.prepare.outputs.UI_SERVICE }}"
-
-          if ([string]::IsNullOrWhiteSpace($svc)) {
-
-            Write-Error "UI_SERVICE missing"
-            exit 1
-          }
 
           $service = Get-Service `
             -Name $svc `
@@ -510,13 +501,17 @@ jobs:
 
               Write-Host "UI Service started : $svc"
 
-            } else {
+            }
+            else {
 
               Write-Host "UI Service already running"
+
             }
 
-          } else {
+          }
+          else {
 
             Write-Error "UI Service not found : $svc"
             exit 1
+
           }
