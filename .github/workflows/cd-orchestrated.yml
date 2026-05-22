@@ -33,7 +33,6 @@ jobs:
       UI_SERVICE: ${{ steps.parse.outputs.ui_service }}
 
     steps:
-
       - name: Parse URL
         id: parse
         shell: pwsh
@@ -43,22 +42,16 @@ jobs:
           $sub = $url.Split('.')[0]
 
           if ($sub -match "-dev$") {
-
             $envName="dev"
             $tenantName = $sub -replace "-dev$",""
-
           }
           elseif ($sub -match "-qa$") {
-
             $envName="qa"
             $tenantName = $sub -replace "-qa$",""
-
           }
           else {
-
             $envName="prod"
             $tenantName = $sub
-
           }
 
           # PROD
@@ -79,7 +72,6 @@ jobs:
 
             $uiPath  = "E:\WebApp\$tenantName-$envName"
             $uiService = "$tenantName-ui-$envName"
-
           }
 
           echo "env=$envName" >> $env:GITHUB_OUTPUT
@@ -184,71 +176,47 @@ jobs:
         shell: pwsh
         run: |
 
-          Import-Module WebAdministration
+          Import-Module WebAdministration -SkipEditionCheck
 
           $site="${{ needs.prepare.outputs.API_SITE }}"
 
-          Write-Host "Stopping Website : $site"
+          Write-Host "Website : $site"
 
-          if (Get-Website | Where-Object { $_.Name -eq $site }) {
-
-            # Stop Website
-            Stop-Website -Name $site
-            Write-Host "Website stopped"
-
-            Start-Sleep 3
-
-            # Stop AppPool
-            if (Test-Path "IIS:\AppPools\$site") {
-
-              Stop-WebAppPool -Name $site
-              Write-Host "AppPool stopped"
-
-            }
-            else {
-
-              Write-Error "AppPool not found : $site"
-              exit 1
-
-            }
-
-            # Wait for shutdown
-            Start-Sleep 10
-
-            # Kill ONLY matching apppool worker process
-            $wp = Get-WmiObject Win32_Process `
-              | Where-Object {
-
-                  $_.Name -eq "w3wp.exe" -and
-                  $_.CommandLine -match "$site"
-
-                }
-
-            if ($wp) {
-
-              Write-Host "Killing remaining worker process for : $site"
-
-              $wp | ForEach-Object {
-
-                Stop-Process -Id $_.ProcessId -Force
-
-              }
-
-            }
-            else {
-
-              Write-Host "No remaining worker process"
-
-            }
-
-            Write-Host "API fully stopped"
-
+          $website = Get-Website | Where-Object {
+            $_.Name -eq $site
           }
-          else {
+
+          if (-not $website) {
 
             Write-Error "Website not found : $site"
             exit 1
+          }
 
+          # REAL APPPOOL NAME
+          $appPool = $website.applicationPool
+
+          Write-Host "AppPool : $appPool"
+
+          # STOP WEBSITE
+          Stop-Website -Name $site
+
+          Write-Host "Website stopped"
+
+          Start-Sleep 3
+
+          # STOP APPPOOL
+          if ($appPool) {
+
+            $poolState = (Get-WebAppPoolState -Name $appPool).Value
+
+            if ($poolState -ne "Stopped") {
+
+              Stop-WebAppPool -Name $appPool
+
+              Write-Host "AppPool stopped"
+
+              Start-Sleep 5
+            }
           }
 
       - name: Stop UI Service
@@ -270,20 +238,11 @@ jobs:
               Start-Sleep 5
 
               Write-Host "UI Service stopped : $svc"
-
-            }
-            else {
-
-              Write-Host "UI Service already stopped"
-
             }
 
-          }
-          else {
+          } else {
 
-            Write-Error "UI Service not found : $svc"
-            exit 1
-
+            Write-Host "UI Service not found : $svc"
           }
 
       - name: Backup Existing Files
@@ -316,16 +275,12 @@ jobs:
           robocopy `
             "${{ needs.prepare.outputs.API_PATH }}" `
             $apiBackup `
-            /MIR `
-            /R:2 `
-            /W:2
+            /MIR
 
           robocopy `
             "${{ needs.prepare.outputs.UI_PATH }}" `
             $uiBackup `
-            /MIR `
-            /R:2 `
-            /W:2
+            /MIR
 
           exit 0
 
@@ -346,14 +301,12 @@ jobs:
 
             Write-Error "API_PATH missing"
             exit 1
-
           }
 
           if ([string]::IsNullOrWhiteSpace("${{ needs.prepare.outputs.UI_PATH }}")) {
 
             Write-Error "UI_PATH missing"
             exit 1
-
           }
 
       - name: Create Target Folders
@@ -378,20 +331,15 @@ jobs:
             "C:\Deploy\api" `
             "${{ needs.prepare.outputs.API_PATH }}" `
             /MIR `
-            /R:3 `
-            /W:5 `
             /XF "appsettings*.json"
 
           if ($LASTEXITCODE -le 3) {
 
-            Write-Host "API deployed successfully"
             exit 0
 
-          }
-          else {
+          } else {
 
             exit $LASTEXITCODE
-
           }
 
       - name: Deploy UI
@@ -402,20 +350,15 @@ jobs:
             "C:\Deploy\ui" `
             "${{ needs.prepare.outputs.UI_PATH }}" `
             /MIR `
-            /R:3 `
-            /W:5 `
             /XF "web.config"
 
           if ($LASTEXITCODE -le 3) {
 
-            Write-Host "UI deployed successfully"
             exit 0
 
-          }
-          else {
+          } else {
 
             exit $LASTEXITCODE
-
           }
 
 
@@ -443,29 +386,28 @@ jobs:
 
           $base="ntis-configs/tenants/$tenant/$envName"
 
-          # API Config
+          # API CONFIG
           Copy-Item `
             "$base/platform/appsettings.Api.Production.json" `
             "${{ needs.prepare.outputs.API_PATH }}\appsettings.Production.json" `
             -Force
 
-          # Worker Config
+          # WORKER CONFIG
           if (Test-Path "$base/platform/appsettings.Worker.Production.json") {
 
             Copy-Item `
               "$base/platform/appsettings.Worker.Production.json" `
               "${{ needs.prepare.outputs.API_PATH }}\appsettings.Worker.json" `
               -Force
-
           }
 
-          # UI Config
+          # UI CONFIG
           Copy-Item `
             "$base/ui/.env.production" `
             "${{ needs.prepare.outputs.UI_PATH }}\.env" `
             -Force
 
-          # DB Config
+          # DB CONFIG
           Copy-Item `
             "$base/database-manager/appsettings.json" `
             "C:\Deploy\db\win-x64\appsettings.json" `
@@ -475,7 +417,7 @@ jobs:
         shell: pwsh
         run: |
 
-          # U = Upgrade Existing Database
+          # U = Upgrade Existing DB
           cmd /c "echo U | `"C:\Deploy\db\win-x64\DatabaseManager.exe`""
 
 
@@ -491,71 +433,57 @@ jobs:
         shell: pwsh
         run: |
 
-          Import-Module WebAdministration
+          Import-Module WebAdministration -SkipEditionCheck
 
           $site="${{ needs.prepare.outputs.API_SITE }}"
 
-          if ([string]::IsNullOrWhiteSpace($site)) {
-
-            Write-Error "API_SITE missing"
-            exit 1
-
+          $website = Get-Website | Where-Object {
+            $_.Name -eq $site
           }
 
-          Write-Host "Starting AppPool : $site"
-
-          # Start AppPool
-          if (Test-Path "IIS:\AppPools\$site") {
-
-            $poolState = (Get-WebAppPoolState -Name $site).Value
-
-            if ($poolState -ne "Started") {
-
-              Start-WebAppPool -Name $site
-              Write-Host "AppPool started"
-
-            }
-            else {
-
-              Write-Host "AppPool already running"
-
-            }
-
-          }
-          else {
-
-            Write-Error "AppPool not found : $site"
-            exit 1
-
-          }
-
-          Start-Sleep 5
-
-          Write-Host "Starting Website : $site"
-
-          # Start Website
-          if (Get-Website | Where-Object { $_.Name -eq $site }) {
-
-            $siteState = (Get-Website -Name $site).State
-
-            if ($siteState -ne "Started") {
-
-              Start-Website -Name $site
-              Write-Host "Website started"
-
-            }
-            else {
-
-              Write-Host "Website already running"
-
-            }
-
-          }
-          else {
+          if (-not $website) {
 
             Write-Error "Website not found : $site"
             exit 1
+          }
 
+          # REAL APPPOOL NAME
+          $appPool = $website.applicationPool
+
+          Write-Host "Website : $site"
+          Write-Host "AppPool : $appPool"
+
+          # START APPPOOL
+          if ($appPool) {
+
+            $poolState = (Get-WebAppPoolState -Name $appPool).Value
+
+            if ($poolState -ne "Started") {
+
+              Start-WebAppPool -Name $appPool
+
+              Write-Host "AppPool started"
+
+              Start-Sleep 5
+
+            } else {
+
+              Write-Host "AppPool already running"
+            }
+          }
+
+          # START WEBSITE
+          $siteState = (Get-Website -Name $site).State
+
+          if ($siteState -ne "Started") {
+
+            Start-Website -Name $site
+
+            Write-Host "Website started"
+
+          } else {
+
+            Write-Host "Website already running"
           }
 
       - name: Start UI Service
@@ -568,7 +496,6 @@ jobs:
 
             Write-Error "UI_SERVICE missing"
             exit 1
-
           }
 
           $service = Get-Service `
@@ -583,17 +510,13 @@ jobs:
 
               Write-Host "UI Service started : $svc"
 
-            }
-            else {
+            } else {
 
               Write-Host "UI Service already running"
-
             }
 
-          }
-          else {
+          } else {
 
             Write-Error "UI Service not found : $svc"
             exit 1
-
           }
