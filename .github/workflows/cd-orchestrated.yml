@@ -317,7 +317,7 @@ jobs:
           robocopy `
             "C:\Deploy\api" `
             "${{ needs.prepare.outputs.API_PATH }}" `
-            /MIR `
+            /E `
             /XF "appsettings*.json" `
             /XD "Uploads"
 
