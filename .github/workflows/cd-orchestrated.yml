@@ -318,7 +318,7 @@ jobs:
             "C:\Deploy\api" `
             "${{ needs.prepare.outputs.API_PATH }}" `
             /MIR `
-            /XF "appsettings*.json"
+            /XF "appsettings*.json" `
             /XD "Uploads"
 
           if ($LASTEXITCODE -le 3) {
