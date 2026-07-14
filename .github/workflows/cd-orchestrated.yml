@@ -132,7 +132,7 @@ jobs:
           # UI
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$packageEnv/$v/ui/ntis-ui-$packageEnv-v$v.zip"
+            --name "$packageEnv/$v/ui/ntis-ui-$packageEnv-v$v.zip" `
             --file "C:\Deploy\ui.zip" `
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
@@ -140,7 +140,7 @@ jobs:
           # API
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$packageEnv/$v/platform/ntis-platform-api-$packageEnv-v$v.zip"
+            --name "$packageEnv/$v/platform/ntis-platform-api-$packageEnv-v$v.zip" `
             --file "C:\Deploy\api.zip" `
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
@@ -148,7 +148,7 @@ jobs:
           # DB
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$packageEnv/$v/database-manager/DatabaseManager-v$v.zip"
+            --name "$packageEnv/$v/database-manager/DatabaseManager-v$v.zip" `
             --file "C:\Deploy\db.zip" `
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
@@ -259,7 +259,7 @@ jobs:
         run: |
 
           $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
-          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+          $packageEnv="${{ github.event.inputs.package_env }}"
 
           $date = Get-Date -Format "yyyy-MM-dd"
           $time = Get-Date -Format "HH-mm-ss"
@@ -385,7 +385,7 @@ jobs:
         run: |
 
           $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
-          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+          $packageEnv="${{ github.event.inputs.package_env }}"
 
           $base="ntis-configs/tenants/$tenant/$envName"
 
