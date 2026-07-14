@@ -8,6 +8,15 @@ on:
         required: true
         type: string
 
+      package_env:
+        description: 'Package Source'
+        required: true
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+
       url:
         description: 'UI URL (example: ptis.scipl.info.in)'
         required: true
@@ -118,12 +127,12 @@ jobs:
         run: |
 
           $v="${{ github.event.inputs.version }}"
-          $envName="${{ needs.prepare.outputs.ENV_NAME }}"
+          $packageEnv="${{ github.event.inputs.package_env }}"
 
           # UI
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$envName/$v/ui/ntis-ui-$envName-v$v.zip" `
+            --name "$packageEnv/$v/ui/ntis-ui-$packageEnv-v$v.zip"
             --file "C:\Deploy\ui.zip" `
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
@@ -131,7 +140,7 @@ jobs:
           # API
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$envName/$v/platform/ntis-platform-api-$envName-v$v.zip" `
+            --name "$packageEnv/$v/platform/ntis-platform-api-$packageEnv-v$v.zip"
             --file "C:\Deploy\api.zip" `
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
@@ -139,7 +148,7 @@ jobs:
           # DB
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$envName/$v/database-manager/DatabaseManager-v$v.zip" `
+            --name "$packageEnv/$v/database-manager/DatabaseManager-v$v.zip"
             --file "C:\Deploy\db.zip" `
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
