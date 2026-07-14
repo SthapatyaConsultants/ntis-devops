@@ -387,7 +387,7 @@ jobs:
           $tenant="${{ needs.prepare.outputs.TENANT_NAME }}"
           $packageEnv="${{ github.event.inputs.package_env }}"
 
-          $base="ntis-configs/tenants/$tenant/$envName"
+          $base="ntis-configs/tenants/$tenant/$packageEnv"
 
           # API Config
           Copy-Item `
