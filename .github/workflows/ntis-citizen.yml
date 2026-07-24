@@ -36,7 +36,7 @@ jobs:
 
   deploy-ui:
     name: Build and Deploy NTIS UI
-    runs-on: [self-hosted, package]
+    runs-on: [self-hosted, windows, citizen-deploy]
     timeout-minutes: 60
 
     defaults:
@@ -289,7 +289,7 @@ jobs:
 
   deploy-platform:
     name: Build and Deploy NTIS Platform
-    runs-on: [self-hosted, package]
+    runs-on: [self-hosted, windows, citizen-deploy]
     timeout-minutes: 60
 
     defaults:
