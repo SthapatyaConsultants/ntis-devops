@@ -377,7 +377,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: SthapatyaConsultants/ntis-configs
-          token: ${{ secrets.CONFIG_REPO_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
           path: ntis-configs
 
       - name: Apply Config Files
