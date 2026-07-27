@@ -113,7 +113,7 @@ jobs:
           clean: true
           repository: SthapatyaConsultants/ntis-database-manager
           ref: ${{ needs.validate-version.outputs.branch }}
-          token: ${{ secrets.DB_REPO_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Run ntis-database-manager package build action
         uses: ./.github/actions/package-build
