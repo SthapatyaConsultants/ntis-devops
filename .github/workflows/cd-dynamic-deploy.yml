@@ -45,12 +45,12 @@ jobs:
 
     steps:
 
-      - name: Checkout Deploy Config Repo
+      - name: Checkout Config Repo
         uses: actions/checkout@v4
         with:
-          repository: SthapatyaConsultants/ntis-deploy-configs
+          repository: SthapatyaConsultants/ntis-configs
           token: ${{ secrets.PAT_TOKEN }}
-          path: deploy-configs
+          path: ntis-configs
 
       - name: Load Config From URL
         id: load
@@ -59,7 +59,7 @@ jobs:
 
           $url = "${{ github.event.inputs.url }}".ToLower()
 
-          $configFile = "deploy-configs/tenants.json"
+          $configFile = "ntis-configs/tenants.json"
 
           if (!(Test-Path $configFile)) {
             Write-Error "tenants.json not found"
@@ -156,9 +156,7 @@ jobs:
           Write-Host "Package Source : $packageEnv"
           Write-Host "Version        : $v"
 
-          # -------------------------------------------------
           # UI
-          # -------------------------------------------------
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
             --name "$packageEnv/$v/ui/ntis-ui-$packageEnv-v$v.zip" `
@@ -166,9 +164,7 @@ jobs:
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
 
-          # -------------------------------------------------
           # API
-          # -------------------------------------------------
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
             --name "$packageEnv/$v/platform/ntis-platform-api-$packageEnv-v$v.zip" `
@@ -176,9 +172,7 @@ jobs:
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
 
-          # -------------------------------------------------
-          # Database Manager
-          # -------------------------------------------------
+          # DB
           az storage blob download `
             --container-name "${{ env.PACKAGE_CONTAINER }}" `
             --name "$packageEnv/$v/database-manager/DatabaseManager-v$v.zip" `
@@ -229,13 +223,6 @@ jobs:
             if ($pool) {
               Stop-WebAppPool -Name $pool
             }
-
-            Write-Host "API stopped : $site"
-          }
-          else {
-
-            Write-Error "Website not found : $site"
-            exit 1
           }
 
       - name: Stop UI Service
@@ -253,8 +240,6 @@ jobs:
             sc stop $svc
 
             Start-Sleep 5
-
-            Write-Host "UI Service stopped : $svc"
           }
 
       - name: Backup Existing Files
@@ -340,7 +325,7 @@ jobs:
 
 
 # =========================================================
-# 6. APPLY CONFIG + DB MIGRATION
+# 6. CONFIGURE + DB MIGRATION
 # =========================================================
   configure:
     name: ⚙️ Apply Config & Run DB Migration
@@ -365,19 +350,13 @@ jobs:
 
           $base = "ntis-configs/tenants/$tenant/$envName"
 
-          Write-Host "Config Base : $base"
-
-          # -------------------------------------------------
           # API Config
-          # -------------------------------------------------
           Copy-Item `
             "$base/platform/appsettings.Api.Production.json" `
             "${{ needs.prepare.outputs.API_PATH }}\appsettings.Production.json" `
             -Force
 
-          # -------------------------------------------------
           # Worker Config (Optional)
-          # -------------------------------------------------
           if (Test-Path "$base/platform/appsettings.Worker.Production.json") {
 
             Copy-Item `
@@ -386,17 +365,13 @@ jobs:
               -Force
           }
 
-          # -------------------------------------------------
           # UI Config
-          # -------------------------------------------------
           Copy-Item `
             "$base/ui/.env.production" `
             "${{ needs.prepare.outputs.UI_PATH }}\.env" `
             -Force
 
-          # -------------------------------------------------
-          # Database Config
-          # -------------------------------------------------
+          # DB Config
           Copy-Item `
             "$base/database-manager/appsettings.json" `
             "C:\Deploy\db\win-x64\appsettings.json" `
