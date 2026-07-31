@@ -1,0 +1,463 @@
+name: Dynamic Multi-Tenant Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (example: 1.0.0.0)'
+        required: true
+        type: string
+
+      url:
+        description: 'Tenant URL (example: gwalior.scipl.info.in)'
+        required: true
+        type: string
+
+env:
+  PACKAGE_CONTAINER: ${{ vars.PACKAGE_CONTAINER_NAME }}
+  CONNECTION_STRING: ${{ secrets.PACKAGE_CONNECTION_STRING }}
+
+jobs:
+
+# =========================================================
+# 1. PREPARE
+# =========================================================
+  prepare:
+    name: 🔹 Load Tenant Configuration
+    runs-on: [self-hosted, cd, ntis]
+
+    outputs:
+      ENV_NAME: ${{ steps.load.outputs.env }}
+      TENANT_NAME: ${{ steps.load.outputs.tenant }}
+      API_SITE: ${{ steps.load.outputs.api_site }}
+      API_PATH: ${{ steps.load.outputs.api_path }}
+      UI_PATH: ${{ steps.load.outputs.ui_path }}
+      UI_SERVICE: ${{ steps.load.outputs.ui_service }}
+
+    steps:
+
+      - name: Checkout Deploy Config Repo
+        uses: actions/checkout@v4
+        with:
+          repository: SthapatyaConsultants/ntis-deploy-configs
+          token: ${{ secrets.PAT_TOKEN }}
+          path: deploy-configs
+
+      - name: Load Config From URL
+        id: load
+        shell: powershell
+        run: |
+
+          $url = "${{ github.event.inputs.url }}".ToLower()
+
+          $configFile = "deploy-configs/tenants.json"
+
+          if (!(Test-Path $configFile)) {
+            Write-Error "tenants.json not found"
+            exit 1
+          }
+
+          $json = Get-Content $configFile -Raw | ConvertFrom-Json
+
+          $cfg = $json.$url
+
+          if (-not $cfg) {
+            Write-Error "No configuration found for URL: $url"
+            exit 1
+          }
+
+          echo "env=$($cfg.environment)" >> $env:GITHUB_OUTPUT
+          echo "tenant=$($cfg.tenant)" >> $env:GITHUB_OUTPUT
+          echo "api_site=$($cfg.apiSite)" >> $env:GITHUB_OUTPUT
+          echo "api_path=$($cfg.apiPath)" >> $env:GITHUB_OUTPUT
+          echo "ui_path=$($cfg.uiPath)" >> $env:GITHUB_OUTPUT
+          echo "ui_service=$($cfg.uiService)" >> $env:GITHUB_OUTPUT
+
+          Write-Host "================================="
+          Write-Host "URL         : $url"
+          Write-Host "Environment : $($cfg.environment)"
+          Write-Host "Tenant      : $($cfg.tenant)"
+          Write-Host "API Site    : $($cfg.apiSite)"
+          Write-Host "API Path    : $($cfg.apiPath)"
+          Write-Host "UI Path     : $($cfg.uiPath)"
+          Write-Host "UI Service  : $($cfg.uiService)"
+          Write-Host "================================="
+
+
+# =========================================================
+# 2. DOWNLOAD PACKAGES
+# =========================================================
+  download:
+    name: 📦 Download Packages
+    needs: prepare
+    runs-on: [self-hosted, cd, ntis]
+
+    steps:
+
+      - name: Prepare Deploy Folder
+        shell: powershell
+        run: |
+
+          Remove-Item "C:\Deploy" `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          New-Item `
+            -ItemType Directory `
+            -Path "C:\Deploy" `
+            -Force | Out-Null
+
+      - name: Download Packages
+        shell: powershell
+        run: |
+
+          $v = "${{ github.event.inputs.version }}"
+          $envName = "${{ needs.prepare.outputs.ENV_NAME }}"
+
+          Write-Host "Downloading packages for environment : $envName"
+
+          # UI
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
+            --name "$envName/$v/ui/ntis-ui-$envName-v$v.zip" `
+            --file "C:\Deploy\ui.zip" `
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
+
+          # API
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
+            --name "$envName/$v/platform/ntis-platform-api-$envName-v$v.zip" `
+            --file "C:\Deploy\api.zip" `
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
+
+          # Database Manager
+          az storage blob download `
+            --container-name "${{ env.PACKAGE_CONTAINER }}" `
+            --name "$envName/$v/database-manager/DatabaseManager-v$v.zip" `
+            --file "C:\Deploy\db.zip" `
+            --connection-string "${{ env.CONNECTION_STRING }}" `
+            --overwrite
+
+      - name: Extract Packages
+        shell: powershell
+        run: |
+
+          Expand-Archive "C:\Deploy\ui.zip" `
+            -DestinationPath "C:\Deploy\ui" -Force
+
+          Expand-Archive "C:\Deploy\api.zip" `
+            -DestinationPath "C:\Deploy\api" -Force
+
+          Expand-Archive "C:\Deploy\db.zip" `
+            -DestinationPath "C:\Deploy\db" -Force
+
+
+# =========================================================
+# 3. STOP SERVICES + BACKUP
+# =========================================================
+  stop-backup:
+    name: 🛑 Stop Services & Backup
+    needs: [prepare, download]
+    runs-on: [self-hosted, cd, ntis]
+
+    steps:
+
+      - name: Stop API Website & AppPool
+        shell: powershell
+        run: |
+
+          Import-Module WebAdministration
+
+          $site = "${{ needs.prepare.outputs.API_SITE }}"
+
+          if (Get-Website | Where-Object { $_.Name -eq $site }) {
+
+            Stop-Website -Name $site
+
+            Start-Sleep 5
+
+            $pool = (Get-Item "IIS:\Sites\$site").applicationPool
+
+            if ($pool) {
+              Stop-WebAppPool -Name $pool
+            }
+
+            Write-Host "API stopped : $site"
+          }
+          else {
+
+            Write-Error "Website not found : $site"
+            exit 1
+          }
+
+      - name: Stop UI Service
+        shell: powershell
+        run: |
+
+          $svc = "${{ needs.prepare.outputs.UI_SERVICE }}"
+
+          $service = Get-Service `
+            -Name $svc `
+            -ErrorAction SilentlyContinue
+
+          if ($service -and $service.Status -ne "Stopped") {
+
+            sc stop $svc
+
+            Start-Sleep 5
+
+            Write-Host "UI Service stopped : $svc"
+          }
+
+      - name: Backup Existing Files
+        shell: powershell
+        run: |
+
+          $tenant  = "${{ needs.prepare.outputs.TENANT_NAME }}"
+          $envName = "${{ needs.prepare.outputs.ENV_NAME }}"
+
+          $date = Get-Date -Format "yyyy-MM-dd"
+          $time = Get-Date -Format "HH-mm-ss"
+
+          $backupRoot = "C:\Backup\$tenant\$envName\$date\$time"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $backupRoot | Out-Null
+
+          robocopy `
+            "${{ needs.prepare.outputs.API_PATH }}" `
+            "$backupRoot\API" `
+            /MIR
+
+          robocopy `
+            "${{ needs.prepare.outputs.UI_PATH }}" `
+            "$backupRoot\UI" `
+            /MIR
+
+          exit 0
+
+
+# =========================================================
+# 4. DEPLOY
+# =========================================================
+  deploy:
+    name: 🚀 Deploy Application
+    needs: [prepare, stop-backup]
+    runs-on: [self-hosted, cd, ntis]
+
+    steps:
+
+      - name: Create Target Folders
+        shell: powershell
+        run: |
+
+          New-Item -ItemType Directory `
+            -Force `
+            -Path "${{ needs.prepare.outputs.API_PATH }}" | Out-Null
+
+          New-Item -ItemType Directory `
+            -Force `
+            -Path "${{ needs.prepare.outputs.UI_PATH }}" | Out-Null
+
+      - name: Deploy API
+        shell: powershell
+        run: |
+
+          robocopy `
+            "C:\Deploy\api" `
+            "${{ needs.prepare.outputs.API_PATH }}" `
+            /E `
+            /XF "appsettings*.json" `
+            /XD "Uploads"
+
+          if ($LASTEXITCODE -gt 3) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Deploy UI
+        shell: powershell
+        run: |
+
+          robocopy `
+            "C:\Deploy\ui" `
+            "${{ needs.prepare.outputs.UI_PATH }}" `
+            /MIR `
+            /XF "web.config"
+
+          if ($LASTEXITCODE -gt 3) {
+            exit $LASTEXITCODE
+          }
+
+
+# =========================================================
+# 5. APPLY CONFIG + DB MIGRATION
+# =========================================================
+  configure:
+    name: ⚙️ Apply Config & Run DB Migration
+    needs: [prepare, deploy]
+    runs-on: [self-hosted, cd, ntis]
+
+    steps:
+
+      - name: Checkout Config Repo
+        uses: actions/checkout@v4
+        with:
+          repository: SthapatyaConsultants/ntis-configs
+          token: ${{ secrets.PAT_TOKEN }}
+          path: ntis-configs
+
+      - name: Apply Config Files
+        shell: powershell
+        run: |
+
+          $tenant  = "${{ needs.prepare.outputs.TENANT_NAME }}"
+          $envName = "${{ needs.prepare.outputs.ENV_NAME }}"
+
+          $base = "ntis-configs/tenants/$tenant/$envName"
+
+          Write-Host "Config Base : $base"
+
+          # -------------------------------------------------
+          # API Config
+          # -------------------------------------------------
+          $apiConfig = "$base/platform/appsettings.Api.Production.json"
+
+          if (!(Test-Path $apiConfig)) {
+            Write-Error "API config not found : $apiConfig"
+            exit 1
+          }
+
+          Copy-Item `
+            $apiConfig `
+            "${{ needs.prepare.outputs.API_PATH }}\appsettings.Production.json" `
+            -Force
+
+          Write-Host "API config copied"
+
+
+          # -------------------------------------------------
+          # Worker Config (Optional)
+          # -------------------------------------------------
+          $workerConfig = "$base/platform/appsettings.Worker.Production.json"
+
+          if (Test-Path $workerConfig) {
+
+            Copy-Item `
+              $workerConfig `
+              "${{ needs.prepare.outputs.API_PATH }}\appsettings.Worker.json" `
+              -Force
+
+            Write-Host "Worker config copied"
+          }
+          else {
+
+            Write-Host "Worker config not found - skipping"
+          }
+
+
+          # -------------------------------------------------
+          # UI Config
+          # -------------------------------------------------
+          $uiConfig = "$base/ui/.env.production"
+
+          if (!(Test-Path $uiConfig)) {
+            Write-Error "UI config not found : $uiConfig"
+            exit 1
+          }
+
+          Copy-Item `
+            $uiConfig `
+            "${{ needs.prepare.outputs.UI_PATH }}\.env" `
+            -Force
+
+          Write-Host "UI config copied"
+
+
+          # -------------------------------------------------
+          # Database Config
+          # -------------------------------------------------
+          $dbConfig = "$base/database-manager/appsettings.json"
+
+          if (!(Test-Path $dbConfig)) {
+            Write-Error "DB config not found : $dbConfig"
+            exit 1
+          }
+
+          Copy-Item `
+            $dbConfig `
+            "C:\Deploy\db\win-x64\appsettings.json" `
+            -Force
+
+          Write-Host "DB config copied"
+
+      - name: Run DB Migration
+        shell: powershell
+        run: |
+
+          cmd /c "echo U | \"C:\Deploy\db\win-x64\DatabaseManager.exe\""
+
+
+# =========================================================
+# 6. START SERVICES
+# =========================================================
+  start:
+    name: 🟢 Start Services
+    needs: [prepare, configure]
+    runs-on: [self-hosted, cd, ntis]
+
+    steps:
+
+      - name: Start API Website & AppPool
+        shell: powershell
+        run: |
+
+          Import-Module WebAdministration
+
+          $site = "${{ needs.prepare.outputs.API_SITE }}"
+
+          $pool = (Get-Item "IIS:\Sites\$site").applicationPool
+
+          if ($pool) {
+
+            $poolState = (Get-WebAppPoolState -Name $pool).Value
+
+            if ($poolState -ne "Started") {
+
+              Start-WebAppPool -Name $pool
+
+              Write-Host "AppPool started"
+            }
+          }
+
+          Start-Sleep 5
+
+          $siteState = (Get-Website -Name $site).State
+
+          if ($siteState -ne "Started") {
+
+            Start-Website -Name $site
+
+            Write-Host "Website started"
+          }
+
+      - name: Start UI Service
+        shell: powershell
+        run: |
+
+          $svc = "${{ needs.prepare.outputs.UI_SERVICE }}"
+
+          $service = Get-Service `
+            -Name $svc `
+            -ErrorAction SilentlyContinue
+
+          if ($service -and $service.Status -ne "Running") {
+
+            sc start $svc
+
+            Write-Host "UI Service started : $svc"
+          }
