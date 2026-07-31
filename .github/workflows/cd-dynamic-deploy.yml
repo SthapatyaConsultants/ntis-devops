@@ -18,7 +18,7 @@ on:
           - prod
 
       url:
-        description: 'Tenant URL (example: gwalior.scipl.info.in)'
+        description: 'Tenant URL (example: ptisthane.scipl.info.in)'
         required: true
         type: string
 
