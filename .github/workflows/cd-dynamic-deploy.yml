@@ -172,14 +172,6 @@ jobs:
             --connection-string "${{ env.CONNECTION_STRING }}" `
             --overwrite
 
-          # DB
-          az storage blob download `
-            --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$packageEnv/$v/database-manager/DatabaseManager-v$v.zip" `
-            --file "C:\Deploy\db.zip" `
-            --connection-string "${{ env.CONNECTION_STRING }}" `
-            --overwrite
-
       - name: Extract Packages
         shell: powershell
         run: |
@@ -189,9 +181,6 @@ jobs:
 
           Expand-Archive "C:\Deploy\api.zip" `
             -DestinationPath "C:\Deploy\api" -Force
-
-          Expand-Archive "C:\Deploy\db.zip" `
-            -DestinationPath "C:\Deploy\db" -Force
 
 
 # =========================================================
@@ -317,7 +306,7 @@ jobs:
             "C:\Deploy\ui" `
             "${{ needs.prepare.outputs.UI_PATH }}" `
             /MIR `
-            /XF "web.config"
+            /XF "server.js" ".env" "web.config"
 
           if ($LASTEXITCODE -gt 3) {
             exit $LASTEXITCODE
@@ -325,71 +314,11 @@ jobs:
 
 
 # =========================================================
-# 6. CONFIGURE + DB MIGRATION
-# =========================================================
-  configure:
-    name: ⚙️ Apply Config & Run DB Migration
-    needs: [prepare, deploy]
-    runs-on: [self-hosted, cd, ntis]
-
-    steps:
-
-      - name: Checkout Config Repo
-        uses: actions/checkout@v4
-        with:
-          repository: SthapatyaConsultants/ntis-configs
-          token: ${{ secrets.PAT_TOKEN }}
-          path: ntis-configs
-
-      - name: Apply Config Files
-        shell: powershell
-        run: |
-
-          $tenant  = "${{ needs.prepare.outputs.TENANT_NAME }}"
-          $envName = "${{ needs.prepare.outputs.ENV_NAME }}"
-
-          $base = "ntis-configs/tenants/$tenant/$envName"
-
-          # API Config
-          Copy-Item `
-            "$base/platform/appsettings.Api.Production.json" `
-            "${{ needs.prepare.outputs.API_PATH }}\appsettings.Production.json" `
-            -Force
-
-          # Worker Config (Optional)
-          if (Test-Path "$base/platform/appsettings.Worker.Production.json") {
-
-            Copy-Item `
-              "$base/platform/appsettings.Worker.Production.json" `
-              "${{ needs.prepare.outputs.API_PATH }}\appsettings.Worker.json" `
-              -Force
-          }
-
-          # UI Config
-          Copy-Item `
-            "$base/ui/.env.production" `
-            "${{ needs.prepare.outputs.UI_PATH }}\.env" `
-            -Force
-
-          # DB Config
-          Copy-Item `
-            "$base/database-manager/appsettings.json" `
-            "C:\Deploy\db\win-x64\appsettings.json" `
-            -Force
-
-      - name: Run DB Migration
-        shell: powershell
-        run: |
-
-          cmd /c "echo U | \"C:\Deploy\db\win-x64\DatabaseManager.exe\""
-
-
-# =========================================================
-# 7. START SERVICES
+# 6. START SERVICES
 # =========================================================
   start:
     name: 🟢 Start Services
-    needs: [prepare, configure]
+    needs: [prepare, deploy]
     runs-on: [self-hosted, cd, ntis]
 
     steps:
