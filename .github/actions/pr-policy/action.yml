@@ -1,0 +1,20 @@
+name: NTIS PR policy
+description: Enforces the branching playbook on a pull request (source -> target, naming, ticket ID, release version, pending back-merges).
+
+inputs:
+  token:
+    description: Token with pull-requests:write on the calling repository (for the sticky comment).
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Evaluate PR policy
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        $script = Join-Path $env:GITHUB_ACTION_PATH '../../../scripts/Test-PrPolicy.ps1'
+        & $script
+        exit $LASTEXITCODE

@@ -1,0 +1,46 @@
+# After a successful production deploy: tag vX.Y.Z in every repo, store the release manifest, publish a
+# GitHub Release and open back-merge PRs main -> staging / qa / develop (design §2.10, §2.11).
+name: Release finalize
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: X.Y.Z from the merged PR title (empty = no tag)
+        type: string
+        required: false
+        default: ''
+      run-url:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  finalize:
+    name: tag, release, back-merge
+    runs-on: [self-hosted, "${{ vars.NTIS_RUNNER_BUILD || 'ntis-build' }}"]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Mint ntis-cicd-bot token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CICD_APP_ID }}
+          private-key: ${{ secrets.CICD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ntis-ui,ntis-platform,ntis-database-manager,ntis-devops
+
+      - name: Finalize release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.NTIS_STORAGE_CONNECTION_STRING || secrets.PACKAGE_CONNECTION_STRING }}
+          NTIS_STATE_CONTAINER: ${{ vars.NTIS_STATE_CONTAINER || 'ntis-state' }}
+          NTIS_PACKAGE_CONTAINER: ${{ vars.NTIS_PACKAGE_CONTAINER || 'ntis-packages' }}
+          VERSION: ${{ inputs.version }}
+          RUN_URL: ${{ inputs.run-url }}
+        run: ./scripts/Invoke-ReleaseFinalize.ps1 -Version $env:VERSION -RunUrl $env:RUN_URL

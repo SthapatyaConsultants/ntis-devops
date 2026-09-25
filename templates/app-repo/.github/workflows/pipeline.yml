@@ -1,0 +1,20 @@
+# Copy to .github/workflows/pipeline.yml in ntis-ui, ntis-platform and ntis-database-manager.
+# Provides the required check "pipeline / pr-policy" and tells ntis-devops when an environment branch moves.
+name: pipeline
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [develop, qa, staging, main, 'release/**']
+  push:
+    branches: [develop, qa, staging, main, 'release/**']
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pipeline:
+    uses: SthapatyaConsultants/ntis-devops/.github/workflows/app-pipeline.yml@v1
+    secrets:
+      CICD_APP_KEY: ${{ secrets.CICD_APP_KEY }}

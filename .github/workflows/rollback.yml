@@ -1,0 +1,123 @@
+# Redeploys an earlier release or history entry (design §2.12). Requires approval on "<env>-manual".
+# Code only - database migrations are NOT reversed.
+name: Rollback
+run-name: Rollback ${{ inputs.environment }} to ${{ inputs.target }}${{ inputs.tenant && format(' ({0})', inputs.tenant) || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, qa, staging, production]
+        required: true
+      target:
+        description: "'previous', a release tag (v2.4.0) or a history stamp (20260925101500)"
+        type: string
+        required: true
+        default: previous
+      tenant:
+        description: Only this tenant URL (optional; state is not recorded for single-tenant rollbacks)
+        type: string
+        required: false
+      reason:
+        description: Why (shown in the approval request and run summary)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.NTIS_STORAGE_CONNECTION_STRING || secrets.PACKAGE_CONNECTION_STRING }}
+  NTIS_PACKAGE_CONTAINER: ${{ vars.NTIS_PACKAGE_CONTAINER || 'ntis-packages' }}
+  NTIS_STATE_CONTAINER: ${{ vars.NTIS_STATE_CONTAINER || 'ntis-state' }}
+
+jobs:
+  approve:
+    name: approval
+    runs-on: ${{ fromJSON(vars.NTIS_POLICY_RUNS_ON || '"ubuntu-latest"') }}
+    environment: ${{ inputs.environment }}-manual
+    steps:
+      - shell: pwsh
+        env:
+          REASON: ${{ inputs.reason }}
+          ACTOR: ${{ github.actor }}
+        run: '"Rollback approved. Requested by $env:ACTOR. Reason: $env:REASON" >> $env:GITHUB_STEP_SUMMARY'
+
+  resolve:
+    needs: approve
+    runs-on: [self-hosted, "${{ vars.NTIS_RUNNER_BUILD || 'ntis-build' }}"]
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.r.outputs.changed }}
+      tenants: ${{ steps.r.outputs.tenants }}
+      runner: ${{ steps.r.outputs.runner }}
+      github_environment: ${{ steps.r.outputs.github_environment }}
+      version: ${{ steps.r.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Mint ntis-cicd-bot token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CICD_APP_ID }}
+          private-key: ${{ secrets.CICD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ntis-configs
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/ntis-configs
+          token: ${{ steps.app.outputs.token }}
+          path: _configs
+      - name: Resolve rollback target
+        id: r
+        shell: pwsh
+        env:
+          ENV_KEY: ${{ inputs.environment }}
+          TARGET: ${{ inputs.target }}
+          TENANT: ${{ inputs.tenant }}
+          NTIS_RUNNER_NONPROD: ${{ vars.NTIS_RUNNER_NONPROD }}
+          NTIS_RUNNER_PROD: ${{ vars.NTIS_RUNNER_PROD }}
+        run: ./scripts/Resolve-Rollback.ps1 -EnvironmentKey $env:ENV_KEY -Target $env:TARGET -Tenant $env:TENANT -ConfigRoot '_configs'
+      - if: always()
+        shell: pwsh
+        run: Remove-Item _configs -Recurse -Force -ErrorAction SilentlyContinue
+
+  deploy:
+    needs: resolve
+    if: needs.resolve.outputs.changed != '[]' && needs.resolve.outputs.tenants != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        tenant: ${{ fromJSON(needs.resolve.outputs.tenants) }}
+    uses: ./.github/workflows/deploy-tenant.yml
+    with:
+      environment: ${{ inputs.environment }}
+      github-environment: ${{ needs.resolve.outputs.github_environment }}
+      runner: ${{ needs.resolve.outputs.runner }}
+      tenant: ${{ matrix.tenant }}
+      components: ${{ needs.resolve.outputs.changed }}
+      version: ${{ needs.resolve.outputs.version }}
+    secrets: inherit
+
+  record:
+    needs: [resolve, deploy]
+    if: needs.deploy.result == 'success' && inputs.tenant == ''
+    runs-on: [self-hosted, "${{ vars.NTIS_RUNNER_BUILD || 'ntis-build' }}"]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Save environment state
+        shell: pwsh
+        env:
+          ENV_KEY: ${{ inputs.environment }}
+          CHANGED: ${{ needs.resolve.outputs.changed }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR: ${{ github.actor }}
+        run: ./scripts/Save-EnvironmentState.ps1 -EnvironmentKey $env:ENV_KEY -ChangedJson $env:CHANGED -Version $env:VERSION -RunUrl $env:RUN_URL -Actor $env:ACTOR

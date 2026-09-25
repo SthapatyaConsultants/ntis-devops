@@ -1,0 +1,20 @@
+self-hosted-runner:
+  labels:
+    # new pipeline (design sec. 2.13)
+    - ntis-build
+    - ntis-deploy-nonprod
+    - ntis-deploy-prod
+    # legacy runners still used by the interim workflows
+    - package
+    - cd
+    - ntis
+    - ci
+    - citizen-deploy
+
+paths:
+  # Legacy (retired in plan 6.4). Its build jobs check the APP repo out at the workspace root, so
+  # ./.github/actions/package-build resolves to the app repo's own action at runtime - not to this repo's.
+  .github/workflows/create-package.yml:
+    ignore:
+      - 'missing input ".+" which is required by action "NTIS package build"'
+      - 'input ".+" is not defined in action "NTIS package build"'

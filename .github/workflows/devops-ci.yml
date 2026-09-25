@@ -1,0 +1,59 @@
+# CI for ntis-devops itself (plan 6.7): workflow lint + Pester on Windows PowerShell 5.1 (the deploy runtime)
+# and PowerShell 7 (the orchestration runtime).
+name: ntis-devops CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devops-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: actionlint
+        shell: bash
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color -shellcheck= -pyflakes=
+
+  pester:
+    name: pester (${{ matrix.shell }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Install Pester 5
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
+          Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
+      - name: Run tests
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $c = New-PesterConfiguration
+          $c.Run.Path = 'tests'
+          $c.Run.Exit = $true
+          $c.Output.Verbosity = 'Detailed'
+          $c.TestResult.Enabled = $true
+          Invoke-Pester -Configuration $c
+      - name: Validate config JSON
+        run: |
+          Get-ChildItem config, governance -Recurse -Filter *.json | ForEach-Object {
+            try { Get-Content $_.FullName -Raw | ConvertFrom-Json | Out-Null } catch { throw "Invalid JSON: $($_.FullName)" }
+          }

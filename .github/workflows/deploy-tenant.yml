@@ -1,0 +1,101 @@
+# Deploys the changed components to ONE tenant in ONE job (design §2.9):
+# backup -> stop -> migrate -> publish -> config -> stamp -> start -> health, restoring the backup on any failure.
+# Runs on the environment's runner under the environment's GitHub Environment (secrets for #{TOKEN}# config).
+name: Deploy tenant
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev | qa | staging | production
+        type: string
+        required: true
+      github-environment:
+        type: string
+        required: true
+      runner:
+        description: Self-hosted runner label for this environment
+        type: string
+        required: true
+      tenant:
+        description: Tenant URL (key in ntis-configs/tenants.json)
+        type: string
+        required: true
+      components:
+        description: JSON array [{Name,Repo,SourceRef,Sha,Tree}] in deploy order
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+        default: ''
+      skip-health-check:
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: ${{ inputs.tenant }}
+    runs-on: [self-hosted, "${{ inputs.runner }}"]
+    timeout-minutes: 30
+    environment:
+      name: ${{ inputs.github-environment }}
+      url: https://${{ inputs.tenant }}/
+    concurrency:
+      group: ntis-tenant-${{ inputs.tenant }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          clean: true
+
+      - name: Mint ntis-cicd-bot token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CICD_APP_ID }}
+          private-key: ${{ secrets.CICD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ntis-configs
+
+      - name: Checkout ntis-configs
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/ntis-configs
+          token: ${{ steps.app.outputs.token }}
+          path: _configs
+
+      - name: Deploy
+        shell: powershell
+        env:
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.NTIS_STORAGE_CONNECTION_STRING || secrets.PACKAGE_CONNECTION_STRING }}
+          NTIS_PACKAGE_CONTAINER: ${{ vars.NTIS_PACKAGE_CONTAINER || 'ntis-packages' }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          TENANT: ${{ inputs.tenant }}
+          ENV_KEY: ${{ inputs.environment }}
+          COMPONENTS: ${{ inputs.components }}
+          VERSION: ${{ inputs.version }}
+          SKIP_HEALTH: ${{ inputs.skip-health-check }}
+          BACKUP_ROOT: ${{ vars.NTIS_BACKUP_ROOT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = @{
+            TenantUrl      = $env:TENANT
+            EnvironmentKey = $env:ENV_KEY
+            ComponentsJson = $env:COMPONENTS
+            ConfigRoot     = (Resolve-Path '_configs').Path
+            Version        = $env:VERSION
+            RunUrl         = $env:RUN_URL
+          }
+          if ($env:SKIP_HEALTH -eq 'true') { $p.SkipHealthCheck = $true }
+          & ./scripts/Invoke-TenantDeploy.ps1 @p
+
+      - name: Remove config checkout
+        if: always()
+        shell: powershell
+        run: Remove-Item _configs -Recurse -Force -ErrorAction SilentlyContinue

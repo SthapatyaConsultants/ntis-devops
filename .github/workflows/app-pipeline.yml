@@ -1,0 +1,65 @@
+# Reusable workflow called by .github/workflows/pipeline.yml in ntis-ui, ntis-platform and ntis-database-manager
+# (template: templates/app-repo). Two jobs:
+#   pr-policy  on pull_request   -> required status check "pipeline / pr-policy" (design §2.5)
+#   notify     on push to an env branch -> repository_dispatch "env-branch-updated" to ntis-devops (design §2.3)
+# Build/lint/test stay in each repo's own CI workflow (required check "build-and-test").
+name: NTIS app pipeline
+
+on:
+  workflow_call:
+    secrets:
+      CICD_APP_KEY:
+        description: Private key of the ntis-cicd-bot GitHub App (org secret).
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pr-policy:
+    name: pr-policy
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ fromJSON(vars.NTIS_POLICY_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    steps:
+      - name: Check PR against the branching playbook
+        uses: SthapatyaConsultants/ntis-devops/.github/actions/pr-policy@v1
+        with:
+          token: ${{ github.token }}
+
+  notify:
+    name: notify-orchestrator
+    if: github.event_name == 'push'
+    runs-on: ${{ fromJSON(vars.NTIS_POLICY_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    steps:
+      - name: Mint ntis-cicd-bot token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CICD_APP_ID }}
+          private-key: ${{ secrets.CICD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ntis-devops
+
+      - name: Dispatch env-branch-updated
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if ($env:REF -notmatch '^(develop|qa|staging|main|release/\d+\.\d+\.\d+)$') {
+            Write-Host "Branch '$env:REF' does not deploy."
+            exit 0
+          }
+          gh api "repos/$env:OWNER/ntis-devops/dispatches" `
+            -f event_type=env-branch-updated `
+            -f "client_payload[repo]=$env:REPO" `
+            -f "client_payload[ref]=$env:REF" `
+            -f "client_payload[sha]=$env:SHA"
+          if ($LASTEXITCODE -ne 0) { throw 'repository_dispatch failed' }
+          "Dispatched **$env:REF** @ ``$env:SHA`` from $env:REPO to ntis-devops/deploy-env." >> $env:GITHUB_STEP_SUMMARY

@@ -1,0 +1,54 @@
+# Opens a consistent set of promotion PRs across the three app repos (playbook §3.1-§3.3, §4).
+# Merging them is still a human decision governed by the rulesets; the deploy starts after the last merge.
+name: Open promotion PRs
+run-name: Promote ${{ inputs.promotion }} (${{ inputs.ticket }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      promotion:
+        type: choice
+        options: [develop-to-qa, qa-to-staging, staging-to-main, release-to-main]
+        required: true
+      ticket:
+        description: Ticket ID for the PR titles (e.g. REL-12)
+        type: string
+        required: true
+      version:
+        description: Release version X.Y.Z (required for *-to-main)
+        type: string
+        required: false
+      release_branch:
+        description: release/X.Y.Z (release-to-main only)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  open:
+    runs-on: ${{ fromJSON(vars.NTIS_POLICY_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Mint ntis-cicd-bot token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CICD_APP_ID }}
+          private-key: ${{ secrets.CICD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ntis-ui,ntis-platform,ntis-database-manager
+
+      - name: Open PRs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PROMOTION: ${{ inputs.promotion }}
+          TICKET: ${{ inputs.ticket }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+        run: |
+          ./scripts/Open-PromotionPrs.ps1 -Promotion $env:PROMOTION -Ticket $env:TICKET -Version $env:VERSION -ReleaseBranch $env:RELEASE_BRANCH

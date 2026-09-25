@@ -1,0 +1,45 @@
+{
+  "$comment": "Branch -> environment map (design sec. 2.2). 'tenantEnvironment' is the value of 'environment' in ntis-configs/tenants.json. 'githubEnvironment' is the GitHub Environment in ntis-devops that holds secrets for that stage. 'runnerClass' picks the deploy runner label: nonprod -> ntis-deploy-nonprod, prod -> ntis-deploy-prod (override with repo variables NTIS_RUNNER_NONPROD / NTIS_RUNNER_PROD).",
+  "owner": "SthapatyaConsultants",
+  "configRepo": "ntis-configs",
+  "components": [
+    { "name": "dbmanager", "repo": "ntis-database-manager", "order": 1 },
+    { "name": "platform",  "repo": "ntis-platform",         "order": 2 },
+    { "name": "ui",        "repo": "ntis-ui",               "order": 3 }
+  ],
+  "environments": {
+    "dev": {
+      "branch": "develop",
+      "tenantEnvironment": "dev",
+      "githubEnvironment": "dev",
+      "runnerClass": "nonprod",
+      "waitForPromotionSet": false,
+      "lowerEnvironment": null
+    },
+    "qa": {
+      "branch": "qa",
+      "tenantEnvironment": "qa",
+      "githubEnvironment": "qa",
+      "runnerClass": "nonprod",
+      "waitForPromotionSet": true,
+      "lowerEnvironment": "dev"
+    },
+    "staging": {
+      "branch": "staging",
+      "releaseBranchPrefix": "release/",
+      "tenantEnvironment": "staging",
+      "githubEnvironment": "staging",
+      "runnerClass": "nonprod",
+      "waitForPromotionSet": true,
+      "lowerEnvironment": "qa"
+    },
+    "production": {
+      "branch": "main",
+      "tenantEnvironment": "prod",
+      "githubEnvironment": "production",
+      "runnerClass": "prod",
+      "waitForPromotionSet": true,
+      "lowerEnvironment": "staging"
+    }
+  }
+}
