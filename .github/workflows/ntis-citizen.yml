@@ -1,645 +1,192 @@
-name: Direct Deploy - NTIS Citizen Feature
+# Direct deploy of feature/rts to the LIVE Citizen site (citizen.scipl.info.in / citizenapi.scipl.info.in).
+# INTERIM - kept because the site is live (design OD-4). Retired by plan task 6.3, when feature/rts is merged
+# through develop -> qa -> staging -> main and Citizen becomes a normal tenant of deploy-env.yml.
+#
+# Phase 0 hardening: release-manager approval (production-manual), host-wide concurrency, backup before stop,
+# automatic restore + restart on any failure, HTTP health check, node_modules now deployed with the build it
+# belongs to (F29), .env/web.config never purged (F29), shared deploy code from scripts/NtisDeploy.psm1.
+name: Direct Deploy - NTIS Citizen Feature (interim)
 
-run-name: Deploy NTIS Citizen - Run ${{ github.run_number }}
+run-name: Deploy NTIS Citizen (feature/rts) - Run ${{ github.run_number }}
 
 on:
   workflow_dispatch:
+    inputs:
+      reason:
+        description: What is being released and why
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ntis-citizen-feature-deployment
+  group: ntis-host-deploy
   cancel-in-progress: false
 
 env:
-  # Fixed branches
   UI_BRANCH: feature/rts
   PLATFORM_BRANCH: feature/rts
-
-  # Deployment folders
   UI_DEPLOY_PATH: E:\WebApp\citizen.scipl.info.in
   API_DEPLOY_PATH: E:\WebApp\citizenapi.scipl.info.in
-
-  # UI Windows service
   UI_SERVICE_NAME: PTIS-Citizen
-
-  # Backend IIS website and application pool
   API_SITE_NAME: citizenapi.scipl.info.in
-  API_APP_POOL: citizenapi.scipl.info.in
+  UI_HEALTH_URL: https://citizen.scipl.info.in/
+  API_HEALTH_URL: ${{ vars.CITIZEN_API_HEALTH_URL }}
+  BACKUP_ROOT: ${{ vars.NTIS_BACKUP_ROOT || 'C:\Backup' }}
 
 jobs:
-
-  # =========================================================
-  # Build and Deploy NTIS UI
-  # =========================================================
-
   deploy-ui:
     name: Build and Deploy NTIS UI
     runs-on: [self-hosted, windows, citizen-deploy]
     timeout-minutes: 60
-
+    environment:
+      name: production-manual
+      url: https://citizen.scipl.info.in/
     defaults:
       run:
         shell: powershell
-
     steps:
+      - name: Checkout ntis-devops
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          clean: true
 
-      # -------------------------------------------------------
-      # Checkout UI from feature/rts
-      # -------------------------------------------------------
-
-      - name: Checkout NTIS UI
-        uses: actions/checkout@v5
+      - name: Checkout NTIS UI (${{ env.UI_BRANCH }})
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: SthapatyaConsultants/ntis-ui
           ref: ${{ env.UI_BRANCH }}
           token: ${{ secrets.PAT_TOKEN }}
+          path: _ui
           clean: true
           fetch-depth: 1
 
-      # -------------------------------------------------------
-      # Setup Node.js
-      # -------------------------------------------------------
-
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: _ui/package-lock.json
 
-      # -------------------------------------------------------
-      # Install UI dependencies
-      # -------------------------------------------------------
-
-      - name: Install UI Dependencies
+      - name: Install and build
+        working-directory: _ui
         run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "Node.js version:"
-          node --version
-
-          Write-Host "NPM version:"
-          npm --version
-
-          if (-not (Test-Path "package.json")) {
-            throw "package.json was not found in the NTIS UI repository."
-          }
-
-          if (Test-Path "package-lock.json") {
-            Write-Host "Installing dependencies using npm ci..."
-            npm ci
-          }
-          else {
-            Write-Warning "package-lock.json was not found. Running npm install."
-            npm install
-          }
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "NTIS UI dependency installation failed."
-          }
-
-      # -------------------------------------------------------
-      # Build UI
-      # -------------------------------------------------------
-
-      - name: Build NTIS UI
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "Building NTIS UI from branch: ${{ env.UI_BRANCH }}"
-
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path 'package-lock.json') { npm ci } else { npm install }
+          if ($LASTEXITCODE -ne 0) { throw 'NTIS UI dependency installation failed.' }
           npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'NTIS UI build failed.' }
+          if (-not (Test-Path '.next')) { throw 'UI build completed, but the .next folder was not found.' }
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "NTIS UI build failed."
-          }
-
-          if (-not (Test-Path ".next")) {
-            throw "UI build completed, but the .next folder was not found."
-          }
-
-          Write-Host "NTIS UI build completed successfully."
-
-      # -------------------------------------------------------
-      # Stop PTIS-Citizen Windows service
-      # -------------------------------------------------------
-
-      - name: Stop PTIS-Citizen Service
+      - name: Deploy UI (backup, stop, publish, start, health - rolls back on failure)
+        env:
+          REASON: ${{ inputs.reason }}
         run: |
-          $ErrorActionPreference = "Stop"
-
-          $serviceName = "${{ env.UI_SERVICE_NAME }}"
-
-          $service = Get-Service `
-            -Name $serviceName `
-            -ErrorAction SilentlyContinue
-
-          if ($null -eq $service) {
-            throw "UI Windows service was not found: $serviceName"
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./scripts/NtisDeploy.psm1 -Force -DisableNameChecking
+          $cfg = Get-NtisDeployConfig
+          $tenant = [pscustomobject]@{ Tenant = 'citizen'; Environment = 'prod' }
+          $targets = [ordered]@{ ui = $env:UI_DEPLOY_PATH }
+          $backup = Backup-NtisTenant -Tenant $tenant -Targets $targets -Root $env:BACKUP_ROOT -ExcludeDirs @('Logs', 'logs')
+          Write-Host "Backup: $backup"
+          try {
+            Stop-NtisService -Name $env:UI_SERVICE_NAME
+            # Whole repo incl. the node_modules this build was made with; never purge server-side config.
+            Invoke-NtisRobocopy -Source '_ui' -Destination $env:UI_DEPLOY_PATH -Mirror `
+              -ExcludeFiles @('.gitignore', 'README.md', '.env', '.env.*', 'web.config') `
+              -ExcludeDirs @('.git', '.github', 'Logs', 'logs') | Out-Null
+            @{ branch = $env:UI_BRANCH; commitSha = (git -C _ui rev-parse HEAD); runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"; reason = $env:REASON; deployedAt = (Get-Date).ToUniversalTime().ToString('o') } |
+              ConvertTo-Json | Set-Content (Join-Path $env:UI_DEPLOY_PATH 'version.json') -Encoding UTF8
+            Start-NtisService -Name $env:UI_SERVICE_NAME
+            Test-NtisHealth -Url $env:UI_HEALTH_URL
+          } catch {
+            $err = $_.Exception.Message
+            Write-Host "::error::UI deploy failed: $err. Restoring $backup"
+            try { Stop-NtisService -Name $env:UI_SERVICE_NAME } catch { Write-Warning $_.Exception.Message }
+            Restore-NtisTenant -BackupPath $backup -Targets $targets -ExcludeDirs @('Logs', 'logs')
+            Start-NtisService -Name $env:UI_SERVICE_NAME
+            throw "UI deploy failed and was rolled back: $err"
           }
-
-          Write-Host "Current service status: $($service.Status)"
-
-          if ($service.Status -ne "Stopped") {
-            Write-Host "Stopping Windows service: $serviceName"
-
-            Stop-Service `
-              -Name $serviceName `
-              -Force `
-              -ErrorAction Stop
-
-            $service.WaitForStatus(
-              "Stopped",
-              [TimeSpan]::FromSeconds(60)
-            )
-          }
-
-          $service.Refresh()
-
-          if ($service.Status -ne "Stopped") {
-            throw "Unable to stop Windows service: $serviceName"
-          }
-
-          Write-Host "Windows service stopped successfully."
-
-      # -------------------------------------------------------
-      # Deploy UI to the specified folder
-      # -------------------------------------------------------
-
-      - name: Deploy NTIS UI
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $sourcePath = "."
-          $deploymentPath = "${{ env.UI_DEPLOY_PATH }}"
-
-          Write-Host "Deploying NTIS UI"
-          Write-Host "Branch: ${{ env.UI_BRANCH }}"
-          Write-Host "Destination: $deploymentPath"
-
-          if (-not (Test-Path $deploymentPath)) {
-            New-Item `
-              -ItemType Directory `
-              -Path $deploymentPath `
-              -Force | Out-Null
-          }
-
-          robocopy `
-            $sourcePath `
-            $deploymentPath `
-            /MIR `
-            /R:5 `
-            /W:5 `
-            /XJ `
-            /XD `
-              ".git" `
-              ".github" `
-              "node_modules" `
-            /XF `
-              ".gitignore" `
-              "README.md" `
-            /NFL `
-            /NDL `
-            /NJH `
-            /NJS `
-            /NP
-
-          $robocopyExitCode = $LASTEXITCODE
-
-          Write-Host "Robocopy exit code: $robocopyExitCode"
-
-          if ($robocopyExitCode -ge 8) {
-            throw "NTIS UI deployment failed. Robocopy exit code: $robocopyExitCode"
-          }
-
-          Write-Host "NTIS UI deployed successfully to: $deploymentPath"
-
-      # -------------------------------------------------------
-      # Start PTIS-Citizen service
-      # This step runs even if deployment fails
-      # -------------------------------------------------------
-
-      - name: Start PTIS-Citizen Service
-        if: always()
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $serviceName = "${{ env.UI_SERVICE_NAME }}"
-
-          $service = Get-Service `
-            -Name $serviceName `
-            -ErrorAction SilentlyContinue
-
-          if ($null -eq $service) {
-            throw "UI Windows service was not found: $serviceName"
-          }
-
-          $service.Refresh()
-
-          if ($service.Status -ne "Running") {
-            Write-Host "Starting Windows service: $serviceName"
-
-            Start-Service `
-              -Name $serviceName `
-              -ErrorAction Stop
-
-            $service.WaitForStatus(
-              "Running",
-              [TimeSpan]::FromSeconds(60)
-            )
-          }
-
-          $service.Refresh()
-
-          if ($service.Status -ne "Running") {
-            throw "Unable to start Windows service: $serviceName"
-          }
-
-          Write-Host "Windows service started successfully."
-
-      # -------------------------------------------------------
-      # Verify UI service
-      # -------------------------------------------------------
-
-      - name: Verify PTIS-Citizen Service
-        if: success()
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $serviceName = "${{ env.UI_SERVICE_NAME }}"
-
-          $service = Get-Service `
-            -Name $serviceName `
-            -ErrorAction Stop
-
-          Write-Host "Service name: $serviceName"
-          Write-Host "Service status: $($service.Status)"
-
-          if ($service.Status -ne "Running") {
-            throw "UI Windows service is not running: $serviceName"
-          }
-
-          Write-Host "NTIS UI deployment completed successfully."
-
-
-  # =========================================================
-  # Build and Deploy NTIS Platform API
-  # =========================================================
+          Remove-NtisOldBackups -Root $env:BACKUP_ROOT -Tenant $tenant -Keep 5
+          "UI deployed from ``$env:UI_BRANCH`` - $env:REASON" >> $env:GITHUB_STEP_SUMMARY
 
   deploy-platform:
     name: Build and Deploy NTIS Platform
+    needs: deploy-ui
     runs-on: [self-hosted, windows, citizen-deploy]
     timeout-minutes: 60
-
+    environment:
+      name: production-manual
+      url: https://citizenapi.scipl.info.in/
     defaults:
       run:
         shell: powershell
-
     steps:
+      - name: Checkout ntis-devops
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          clean: true
 
-      # -------------------------------------------------------
-      # Checkout backend from feature/rts
-      # -------------------------------------------------------
-
-      - name: Checkout NTIS Platform
-        uses: actions/checkout@v5
+      - name: Checkout NTIS Platform (${{ env.PLATFORM_BRANCH }})
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: SthapatyaConsultants/ntis-platform
           ref: ${{ env.PLATFORM_BRANCH }}
           token: ${{ secrets.PAT_TOKEN }}
+          path: _platform
           clean: true
           fetch-depth: 1
 
-      # -------------------------------------------------------
-      # Setup .NET
-      # -------------------------------------------------------
-
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: 10.0.x
 
-      # -------------------------------------------------------
-      # Display .NET details
-      # -------------------------------------------------------
-
-      - name: Display .NET Information
+      - name: Restore, build, publish
+        working-directory: _platform
         run: |
-          $ErrorActionPreference = "Stop"
-
-          dotnet --info
-
-      # -------------------------------------------------------
-      # Restore backend
-      # -------------------------------------------------------
-
-      - name: Restore NTIS Platform
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "Restoring NTIS Platform from branch: ${{ env.PLATFORM_BRANCH }}"
-
+          $ErrorActionPreference = 'Stop'
           dotnet restore
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "NTIS Platform restore failed."
-          }
-
-      # -------------------------------------------------------
-      # Build backend
-      # -------------------------------------------------------
-
-      - name: Build NTIS Platform
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          dotnet build `
-            --configuration Release `
-            --no-restore
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "NTIS Platform build failed."
-          }
-
-          Write-Host "NTIS Platform build completed successfully."
-
-      # -------------------------------------------------------
-      # Publish backend
-      # -------------------------------------------------------
-
-      - name: Publish NTIS Platform
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $publishPath = Join-Path `
-            $env:RUNNER_TEMP `
-            "NTIS-Platform-Publish-${{ github.run_id }}"
-
-          if (Test-Path $publishPath) {
-            Remove-Item `
-              -Path $publishPath `
-              -Recurse `
-              -Force
-          }
-
-          New-Item `
-            -ItemType Directory `
-            -Path $publishPath `
-            -Force | Out-Null
-
-          Write-Host "Publishing NTIS Platform to: $publishPath"
-
-          dotnet publish `
-            --configuration Release `
-            --no-build `
-            --output $publishPath
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "NTIS Platform publish failed."
-          }
-
-          $publishedFiles = @(
-            Get-ChildItem `
-              -Path $publishPath `
-              -Recurse `
-              -File
-          )
-
-          if ($publishedFiles.Count -eq 0) {
-            throw "NTIS Platform publish folder is empty."
-          }
-
-          Write-Host "Published files: $($publishedFiles.Count)"
-
+          if ($LASTEXITCODE -ne 0) { throw 'NTIS Platform restore failed.' }
+          dotnet build --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'NTIS Platform build failed.' }
+          $publishPath = Join-Path $env:RUNNER_TEMP "NTIS-Platform-Publish-$env:GITHUB_RUN_ID"
+          if (Test-Path $publishPath) { Remove-Item $publishPath -Recurse -Force }
+          dotnet publish --configuration Release --no-build --output $publishPath
+          if ($LASTEXITCODE -ne 0) { throw 'NTIS Platform publish failed.' }
+          if (-not (Get-ChildItem $publishPath -Recurse -File | Select-Object -First 1)) { throw 'NTIS Platform publish folder is empty.' }
           "API_PUBLISH_PATH=$publishPath" >> $env:GITHUB_ENV
 
-      # -------------------------------------------------------
-      # Stop API IIS website and app pool
-      # -------------------------------------------------------
-
-      - name: Stop API Website and App Pool
+      - name: Deploy Platform (backup, stop, publish, start, health - rolls back on failure)
+        env:
+          REASON: ${{ inputs.reason }}
         run: |
-          $ErrorActionPreference = "Stop"
-
-          Import-Module WebAdministration
-
-          $siteName = "${{ env.API_SITE_NAME }}"
-          $appPoolName = "${{ env.API_APP_POOL }}"
-
-          if (Test-Path "IIS:\Sites\$siteName") {
-            $siteState = (
-              Get-WebsiteState -Name $siteName
-            ).Value
-
-            Write-Host "Current API website state: $siteState"
-
-            if ($siteState -eq "Started") {
-              Write-Host "Stopping API website: $siteName"
-
-              Stop-Website `
-                -Name $siteName `
-                -ErrorAction Stop
-            }
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./scripts/NtisDeploy.psm1 -Force -DisableNameChecking
+          $tenant = [pscustomobject]@{ Tenant = 'citizenapi'; Environment = 'prod' }
+          $targets = [ordered]@{ api = $env:API_DEPLOY_PATH }
+          $keepDirs = @('Uploads', 'uploads', 'Logs', 'logs')
+          $backup = Backup-NtisTenant -Tenant $tenant -Targets $targets -Root $env:BACKUP_ROOT -ExcludeDirs $keepDirs
+          Write-Host "Backup: $backup"
+          try {
+            Stop-NtisApiSite -Site $env:API_SITE_NAME
+            Publish-NtisFolder -Source $env:API_PUBLISH_PATH -Destination $env:API_DEPLOY_PATH `
+              -PreserveFiles @('appsettings.json', 'appsettings.*.json', 'web.config') -PreserveDirs $keepDirs
+            @{ branch = $env:PLATFORM_BRANCH; commitSha = (git -C _platform rev-parse HEAD); runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"; reason = $env:REASON; deployedAt = (Get-Date).ToUniversalTime().ToString('o') } |
+              ConvertTo-Json | Set-Content (Join-Path $env:API_DEPLOY_PATH 'version.json') -Encoding UTF8
+            Start-NtisApiSite -Site $env:API_SITE_NAME
+            if ($env:API_HEALTH_URL) { Test-NtisHealth -Url $env:API_HEALTH_URL } else { Write-Warning 'CITIZEN_API_HEALTH_URL not set; API health not checked.' }
+            Test-NtisHealth -Url $env:UI_HEALTH_URL
+          } catch {
+            $err = $_.Exception.Message
+            Write-Host "::error::Platform deploy failed: $err. Restoring $backup"
+            try { Stop-NtisApiSite -Site $env:API_SITE_NAME } catch { Write-Warning $_.Exception.Message }
+            Restore-NtisTenant -BackupPath $backup -Targets $targets -ExcludeDirs $keepDirs
+            Start-NtisApiSite -Site $env:API_SITE_NAME
+            throw "Platform deploy failed and was rolled back: $err"
+          } finally {
+            Remove-Item $env:API_PUBLISH_PATH -Recurse -Force -ErrorAction SilentlyContinue
           }
-          else {
-            Write-Warning "API IIS website was not found: $siteName"
-          }
-
-          if (Test-Path "IIS:\AppPools\$appPoolName") {
-            $appPoolState = (
-              Get-WebAppPoolState -Name $appPoolName
-            ).Value
-
-            Write-Host "Current API app pool state: $appPoolState"
-
-            if ($appPoolState -eq "Started") {
-              Write-Host "Stopping API application pool: $appPoolName"
-
-              Stop-WebAppPool `
-                -Name $appPoolName `
-                -ErrorAction Stop
-            }
-          }
-          else {
-            Write-Warning "API IIS application pool was not found: $appPoolName"
-          }
-
-          Start-Sleep -Seconds 5
-
-      # -------------------------------------------------------
-      # Deploy published backend
-      #
-      # Existing appsettings files, Uploads and Logs are
-      # excluded from deployment.
-      # -------------------------------------------------------
-
-      - name: Deploy NTIS Platform
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $publishPath = "$env:API_PUBLISH_PATH"
-          $deploymentPath = "${{ env.API_DEPLOY_PATH }}"
-
-          Write-Host "Deploying NTIS Platform"
-          Write-Host "Branch: ${{ env.PLATFORM_BRANCH }}"
-          Write-Host "Source: $publishPath"
-          Write-Host "Destination: $deploymentPath"
-
-          if (-not (Test-Path $publishPath)) {
-            throw "API publish folder was not found: $publishPath"
-          }
-
-          if (-not (Test-Path $deploymentPath)) {
-            New-Item `
-              -ItemType Directory `
-              -Path $deploymentPath `
-              -Force | Out-Null
-          }
-
-          robocopy `
-            $publishPath `
-            $deploymentPath `
-            /MIR `
-            /R:5 `
-            /W:5 `
-            /XJ `
-            /XF `
-              "appsettings.json" `
-              "appsettings.*.json" `
-            /XD `
-              "Uploads" `
-              "uploads" `
-              "Logs" `
-              "logs" `
-            /NFL `
-            /NDL `
-            /NJH `
-            /NJS `
-            /NP
-
-          $robocopyExitCode = $LASTEXITCODE
-
-          Write-Host "Robocopy exit code: $robocopyExitCode"
-
-          if ($robocopyExitCode -ge 8) {
-            throw "NTIS Platform deployment failed. Robocopy exit code: $robocopyExitCode"
-          }
-
-          Write-Host "NTIS Platform deployed successfully to: $deploymentPath"
-
-      # -------------------------------------------------------
-      # Start API website and app pool
-      # This step runs even if deployment fails
-      # -------------------------------------------------------
-
-      - name: Start API Website and App Pool
-        if: always()
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Import-Module WebAdministration
-
-          $siteName = "${{ env.API_SITE_NAME }}"
-          $appPoolName = "${{ env.API_APP_POOL }}"
-
-          if (Test-Path "IIS:\AppPools\$appPoolName") {
-            $appPoolState = (
-              Get-WebAppPoolState -Name $appPoolName
-            ).Value
-
-            if ($appPoolState -ne "Started") {
-              Write-Host "Starting API application pool: $appPoolName"
-
-              Start-WebAppPool `
-                -Name $appPoolName `
-                -ErrorAction Stop
-            }
-          }
-          else {
-            Write-Warning "API IIS application pool was not found: $appPoolName"
-          }
-
-          Start-Sleep -Seconds 3
-
-          if (Test-Path "IIS:\Sites\$siteName") {
-            $siteState = (
-              Get-WebsiteState -Name $siteName
-            ).Value
-
-            if ($siteState -ne "Started") {
-              Write-Host "Starting API website: $siteName"
-
-              Start-Website `
-                -Name $siteName `
-                -ErrorAction Stop
-            }
-          }
-          else {
-            Write-Warning "API IIS website was not found: $siteName"
-          }
-
-      # -------------------------------------------------------
-      # Verify backend IIS status
-      # -------------------------------------------------------
-
-      - name: Verify API IIS Status
-        if: success()
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Import-Module WebAdministration
-
-          $siteName = "${{ env.API_SITE_NAME }}"
-          $appPoolName = "${{ env.API_APP_POOL }}"
-
-          if (-not (Test-Path "IIS:\AppPools\$appPoolName")) {
-            throw "API IIS application pool was not found: $appPoolName"
-          }
-
-          if (-not (Test-Path "IIS:\Sites\$siteName")) {
-            throw "API IIS website was not found: $siteName"
-          }
-
-          $appPoolState = (
-            Get-WebAppPoolState -Name $appPoolName
-          ).Value
-
-          $siteState = (
-            Get-WebsiteState -Name $siteName
-          ).Value
-
-          Write-Host "API application pool: $appPoolState"
-          Write-Host "API website: $siteState"
-
-          if ($appPoolState -ne "Started") {
-            throw "API application pool is not running: $appPoolName"
-          }
-
-          if ($siteState -ne "Started") {
-            throw "API website is not running: $siteName"
-          }
-
-          Write-Host "NTIS Platform deployment completed successfully."
-
-      # -------------------------------------------------------
-      # Remove temporary backend publish folder
-      # -------------------------------------------------------
-
-      - name: Cleanup API Publish Folder
-        if: always()
-        run: |
-          $publishPath = "$env:API_PUBLISH_PATH"
-
-          if (
-            -not [string]::IsNullOrWhiteSpace($publishPath) -and
-            (Test-Path $publishPath)
-          ) {
-            Remove-Item `
-              -Path $publishPath `
-              -Recurse `
-              -Force `
-              -ErrorAction SilentlyContinue
-
-            Write-Host "Temporary API publish folder removed."
-          }
+          Remove-NtisOldBackups -Root $env:BACKUP_ROOT -Tenant $tenant -Keep 5
+          "Platform deployed from ``$env:PLATFORM_BRANCH`` - $env:REASON" >> $env:GITHUB_STEP_SUMMARY

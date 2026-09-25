@@ -1,13 +1,18 @@
-name: Dynamic Multi-Tenant Deployment
+# INTERIM manual deploy of existing version-numbered packages (plan Phase 0). Replaced by deploy-env.yml at
+# cutover (plan 6.2) and deleted in 6.4.
+# Phase 0 fixes: approval via <env>-manual (F32), single job + per-run folder (F17), host-wide concurrency (F18),
+# backup must succeed (F30), automatic restore on failure (F19), DB migration restored (F20/F28),
+# real service start/stop - no `sc` alias (F16), health check (F27), inputs validated and never inlined (F33),
+# timeouts (F31). All deploy logic comes from scripts/NtisDeploy.psm1 (same code as the new pipeline).
+name: Dynamic Multi-Tenant Deployment (interim)
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (example: 1.0.0.0)'
+        description: 'Package version (example: 1.0.0.0)'
         required: true
         type: string
-
       package_env:
         description: 'Package source environment'
         required: true
@@ -16,435 +21,150 @@ on:
           - dev
           - qa
           - prod
-
       url:
         description: 'Tenant URL (example: ptisthane.scipl.info.in)'
         required: true
         type: string
+      run_db_migration:
+        description: 'Run DatabaseManager (U) before deploying the API'
+        required: true
+        type: boolean
+        default: true
+      skip_health_check:
+        description: 'Skip the HTTP health check'
+        required: false
+        type: boolean
+        default: false
 
-env:
-  PACKAGE_CONTAINER: ${{ vars.PACKAGE_CONTAINER_NAME }}
-  CONNECTION_STRING: ${{ secrets.PACKAGE_CONNECTION_STRING }}
+permissions:
+  contents: read
+
+concurrency:
+  group: ntis-host-deploy
+  cancel-in-progress: false
 
 jobs:
-
-# =========================================================
-# 1. PREPARE
-# =========================================================
   prepare:
-    name: 🔹 Load Tenant Configuration
+    name: Load tenant
     runs-on: [self-hosted, cd, ntis]
-
+    timeout-minutes: 10
     outputs:
-      ENV_NAME: ${{ steps.load.outputs.env }}
-      TENANT_NAME: ${{ steps.load.outputs.tenant }}
-      API_SITE: ${{ steps.load.outputs.api_site }}
-      API_PATH: ${{ steps.load.outputs.api_path }}
-      UI_PATH: ${{ steps.load.outputs.ui_path }}
-      UI_SERVICE: ${{ steps.load.outputs.ui_service }}
-
+      environment: ${{ steps.load.outputs.environment }}
     steps:
+      - name: Checkout ntis-devops
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: Checkout Config Repo
-        uses: actions/checkout@v4
+      - name: Checkout config repo
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: SthapatyaConsultants/ntis-configs
           token: ${{ secrets.PAT_TOKEN }}
-          path: ntis-configs
+          path: _configs
 
-      - name: Load Config From URL
+      - name: Validate inputs and tenant
         id: load
         shell: powershell
+        env:
+          VERSION: ${{ inputs.version }}
+          PACKAGE_ENV: ${{ inputs.package_env }}
+          TENANT_URL: ${{ inputs.url }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./scripts/NtisDeploy.psm1 -Force -DisableNameChecking
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Invalid version '$env:VERSION' (expected W.X.Y.Z)." }
+          $t = Get-NtisTenant -TenantsFile '_configs/tenants.json' -Url $env:TENANT_URL
+          if ($t.Environment -ne $env:PACKAGE_ENV) { throw "Tenant $($t.Url) is '$($t.Environment)' but package_env is '$env:PACKAGE_ENV'." }
+          "environment=$($t.Environment)" >> $env:GITHUB_OUTPUT
+          Write-Host "Tenant $($t.Url): env=$($t.Environment) site=$($t.ApiSite) api=$($t.ApiPath) ui=$($t.UiPath) service=$($t.UiService)"
 
-          $url = "${{ github.event.inputs.url }}".ToLower()
+      - if: always()
+        shell: powershell
+        run: Remove-Item _configs -Recurse -Force -ErrorAction SilentlyContinue
 
-          $configFile = "ntis-configs/tenants.json"
-
-          if (!(Test-Path $configFile)) {
-            Write-Error "tenants.json not found"
-            exit 1
-          }
-
-          $json = Get-Content $configFile -Raw | ConvertFrom-Json
-
-          $cfg = $json.$url
-
-          if (-not $cfg) {
-            Write-Error "No configuration found for URL: $url"
-            exit 1
-          }
-
-          echo "env=$($cfg.environment)" >> $env:GITHUB_OUTPUT
-          echo "tenant=$($cfg.tenant)" >> $env:GITHUB_OUTPUT
-          echo "api_site=$($cfg.apiSite)" >> $env:GITHUB_OUTPUT
-          echo "api_path=$($cfg.apiPath)" >> $env:GITHUB_OUTPUT
-          echo "ui_path=$($cfg.uiPath)" >> $env:GITHUB_OUTPUT
-          echo "ui_service=$($cfg.uiService)" >> $env:GITHUB_OUTPUT
-
-          Write-Host "================================="
-          Write-Host "URL         : $url"
-          Write-Host "Environment : $($cfg.environment)"
-          Write-Host "Tenant      : $($cfg.tenant)"
-          Write-Host "API Site    : $($cfg.apiSite)"
-          Write-Host "API Path    : $($cfg.apiPath)"
-          Write-Host "UI Path     : $($cfg.uiPath)"
-          Write-Host "UI Service  : $($cfg.uiService)"
-          Write-Host "================================="
-
-
-# =========================================================
-# 2. VALIDATE ENVIRONMENT
-# =========================================================
-  validate:
-    name: ✅ Validate Environment
+  deploy:
+    name: Deploy ${{ inputs.url }}
     needs: prepare
     runs-on: [self-hosted, cd, ntis]
-
+    timeout-minutes: 30
+    # prod -> production-manual, qa -> qa-manual, dev -> dev-manual (required reviewers on production-manual)
+    environment:
+      name: ${{ needs.prepare.outputs.environment == 'prod' && 'production' || needs.prepare.outputs.environment }}-manual
+      url: https://${{ inputs.url }}/
     steps:
+      - name: Checkout ntis-devops
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          clean: true
 
-      - name: Validate Package Environment
+      - name: Checkout config repo
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: SthapatyaConsultants/ntis-configs
+          token: ${{ secrets.PAT_TOKEN }}
+          path: _configs
+
+      - name: Download, back up, deploy, verify (rolls back on failure)
         shell: powershell
+        env:
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.PACKAGE_CONNECTION_STRING }}
+          PACKAGE_CONTAINER: ${{ vars.PACKAGE_CONTAINER_NAME }}
+          VERSION: ${{ inputs.version }}
+          PACKAGE_ENV: ${{ inputs.package_env }}
+          TENANT_URL: ${{ inputs.url }}
+          RUN_DB: ${{ inputs.run_db_migration }}
+          SKIP_HEALTH: ${{ inputs.skip_health_check }}
+          BACKUP_ROOT: ${{ vars.NTIS_BACKUP_ROOT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./scripts/NtisPipeline.psm1 -Force -DisableNameChecking
+          Import-Module ./scripts/NtisDeploy.psm1 -Force -DisableNameChecking
 
-          $tenantEnv  = "${{ needs.prepare.outputs.ENV_NAME }}"
-          $packageEnv = "${{ github.event.inputs.package_env }}"
+          $v = $env:VERSION; $pe = $env:PACKAGE_ENV
+          $tenant = Get-NtisTenant -TenantsFile '_configs/tenants.json' -Url $env:TENANT_URL
+          $deployConfig = Get-NtisDeployConfig
+          $work = Join-Path $env:RUNNER_TEMP "ntis-interim-$env:GITHUB_RUN_ID"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
 
-          Write-Host "Tenant Environment : $tenantEnv"
-          Write-Host "Package Environment: $packageEnv"
+          try {
+            function Get-Pkg([string] $blob, [string] $name) {
+              $zip = Join-Path $work "$name.zip"
+              Save-NtisBlobFile -Container $env:PACKAGE_CONTAINER -Name $blob -Path $zip
+              return (Expand-NtisPackage -Zip $zip -Destination (Join-Path $work $name))
+            }
 
-          if ($tenantEnv -ne $packageEnv) {
+            $components = @('platform', 'ui')
+            $packages = @{}
+            $packages['ui'] = Get-Pkg "$pe/$v/ui/ntis-ui-$pe-v$v.zip" 'ui'
+            # The legacy API zip is flat; the deploy module expects <platform>\api
+            $platformRoot = Join-Path $work 'platform'
+            New-Item -ItemType Directory -Path $platformRoot -Force | Out-Null
+            $api = Get-Pkg "$pe/$v/platform/ntis-platform-api-$pe-v$v.zip" 'api-flat'
+            Move-Item $api (Join-Path $platformRoot 'api')
+            $packages['platform'] = $platformRoot
 
-            Write-Error "Package environment does not match tenant environment"
-            exit 1
+            if ($env:RUN_DB -eq 'true') {
+              $packages['dbmanager'] = Get-Pkg "$pe/$v/database-manager/DatabaseManager-v$v.zip" 'dbmanager'
+              $components = @('dbmanager') + $components
+            }
+
+            $p = @{
+              Tenant            = $tenant
+              TenantEnvironment = $pe
+              Components        = $components
+              Packages          = $packages
+              ConfigRoot        = (Resolve-Path '_configs').Path
+              DeployConfig      = $deployConfig
+              Stamp             = @{ version = $v; packageEnvironment = $pe; tenant = $tenant.Url; runUrl = $env:RUN_URL; deployedAt = (Get-Date).ToUniversalTime().ToString('o') }
+            }
+            if ($env:BACKUP_ROOT) { $p.BackupRoot = $env:BACKUP_ROOT }
+            if ($env:SKIP_HEALTH -eq 'true') { $p.SkipHealthCheck = $true }
+            $backup = Invoke-NtisTenantDeploy @p
+            "Deployed **$v** ($pe) to **$($tenant.Url)**: $($components -join ', '). Backup: ``$backup``" >> $env:GITHUB_STEP_SUMMARY
+          } finally {
+            Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-          Write-Host "Environment validation passed"
-
-
-# =========================================================
-# 3. DOWNLOAD PACKAGES
-# =========================================================
-  download:
-    name: 📦 Download Packages
-    needs: [prepare, validate]
-    runs-on: [self-hosted, cd, ntis]
-
-    steps:
-
-      - name: Prepare Deploy Folder
+      - if: always()
         shell: powershell
-        run: |
-
-          Remove-Item "C:\Deploy" `
-            -Recurse `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-          New-Item `
-            -ItemType Directory `
-            -Path "C:\Deploy" `
-            -Force | Out-Null
-
-      - name: Download Packages
-        shell: powershell
-        run: |
-
-          $v = "${{ github.event.inputs.version }}"
-          $packageEnv = "${{ github.event.inputs.package_env }}"
-
-          Write-Host "Package Source : $packageEnv"
-          Write-Host "Version        : $v"
-
-          # UI
-          az storage blob download `
-            --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$packageEnv/$v/ui/ntis-ui-$packageEnv-v$v.zip" `
-            --file "C:\Deploy\ui.zip" `
-            --connection-string "${{ env.CONNECTION_STRING }}" `
-            --overwrite
-
-          # API
-          az storage blob download `
-            --container-name "${{ env.PACKAGE_CONTAINER }}" `
-            --name "$packageEnv/$v/platform/ntis-platform-api-$packageEnv-v$v.zip" `
-            --file "C:\Deploy\api.zip" `
-            --connection-string "${{ env.CONNECTION_STRING }}" `
-            --overwrite
-
-      - name: Extract Packages
-        shell: powershell
-        run: |
-
-          Expand-Archive "C:\Deploy\ui.zip" `
-            -DestinationPath "C:\Deploy\ui" -Force
-
-          Expand-Archive "C:\Deploy\api.zip" `
-            -DestinationPath "C:\Deploy\api" -Force
-
-
-# =========================================================
-# 4. STOP SERVICES + BACKUP
-# =========================================================
-  stop-backup:
-    name: 🛑 Stop Services & Backup
-    needs: [prepare, download]
-    runs-on: [self-hosted, cd, ntis]
-
-    steps:
-
-      - name: Stop API Website & AppPool
-        shell: powershell
-        run: |
-
-          Import-Module WebAdministration
-
-          $site = "${{ needs.prepare.outputs.API_SITE }}"
-
-          Write-Host "IIS Site: $site"
-
-          $siteObject = Get-Website -Name $site -ErrorAction SilentlyContinue
-
-          if (-not $siteObject) {
-            Write-Error "IIS website '$site' does not exist."
-            exit 1
-          }
-
-          # Get the actual Application Pool assigned to this IIS site.
-          $pool = $siteObject.applicationPool
-
-          if (-not $pool) {
-            Write-Error "No Application Pool is assigned to IIS website '$site'."
-            exit 1
-          }
-
-          Write-Host "Application Pool: $pool"
-
-          Stop-Website -Name $site -ErrorAction Stop
-          Stop-WebAppPool -Name $pool -ErrorAction Stop
-
-          $timeout = 30
-          $elapsed = 0
-
-          do {
-            Start-Sleep -Seconds 2
-            $elapsed += 2
-            $siteState = (Get-Website -Name $site).State
-            $poolState = (Get-WebAppPoolState -Name $pool).Value
-            Write-Host "Site: $siteState | AppPool: $poolState"
-          } while (($siteState -ne "Stopped" -or $poolState -ne "Stopped") -and $elapsed -lt $timeout)
-
-          if ($siteState -ne "Stopped" -or $poolState -ne "Stopped") {
-            Write-Error "Failed to stop IIS Site/AppPool. Site=$siteState AppPool=$poolState"
-            exit 1
-          }
-
-          Write-Host "IIS Site and AppPool stopped successfully."
-
-
-      - name: Stop UI Service
-        shell: powershell
-        run: |
-
-          $svc = "${{ needs.prepare.outputs.UI_SERVICE }}"
-
-          $service = Get-Service -Name $svc -ErrorAction SilentlyContinue
-
-          if (-not $service) {
-            Write-Error "Windows service '$svc' does not exist."
-            exit 1
-          }
-
-          if ($service.Status -ne "Stopped") {
-            Stop-Service -Name $svc -Force -ErrorAction Stop
-          }
-
-          $timeout = 30
-          $elapsed = 0
-
-          do {
-            Start-Sleep -Seconds 2
-            $elapsed += 2
-            $service.Refresh()
-            Write-Host "Service State: $($service.Status)"
-          } while ($service.Status -ne "Stopped" -and $elapsed -lt $timeout)
-
-          if ($service.Status -ne "Stopped") {
-            Write-Error "Service '$svc' did not stop. Current state: $($service.Status)"
-            exit 1
-          }
-
-          Write-Host "UI Service stopped successfully."
-
-      - name: Backup Existing Files
-        shell: powershell
-        run: |
-
-          $tenant  = "${{ needs.prepare.outputs.TENANT_NAME }}"
-          $envName = "${{ needs.prepare.outputs.ENV_NAME }}"
-
-          $date = Get-Date -Format "yyyy-MM-dd"
-          $time = Get-Date -Format "HH-mm-ss"
-
-          $backupRoot = "C:\Backup\$tenant\$envName\$date\$time"
-
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $backupRoot | Out-Null
-
-          robocopy `
-            "${{ needs.prepare.outputs.API_PATH }}" `
-            "$backupRoot\API" `
-            /MIR
-
-          robocopy `
-            "${{ needs.prepare.outputs.UI_PATH }}" `
-            "$backupRoot\UI" `
-            /MIR
-
-          exit 0
-
-
-# =========================================================
-# 5. DEPLOY
-# =========================================================
-  deploy:
-    name: 🚀 Deploy Application
-    needs: [prepare, stop-backup]
-    runs-on: [self-hosted, cd, ntis]
-
-    steps:
-
-      - name: Create Target Folders
-        shell: powershell
-        run: |
-
-          New-Item -ItemType Directory `
-            -Force `
-            -Path "${{ needs.prepare.outputs.API_PATH }}" | Out-Null
-
-          New-Item -ItemType Directory `
-            -Force `
-            -Path "${{ needs.prepare.outputs.UI_PATH }}" | Out-Null
-
-      - name: Deploy API
-        shell: powershell
-        run: |
-
-          robocopy `
-            "C:\Deploy\api" `
-            "${{ needs.prepare.outputs.API_PATH }}" `
-            /E `
-            /XF "appsettings.json" `
-                "appsettings.Development.json" `
-                "appsettings.Production.json" `
-                "appsettings.Worker.json" `
-            /XD "Uploads"
-
-          $robocopyExitCode = $LASTEXITCODE
-
-          Write-Host "Robocopy Exit Code: $robocopyExitCode"
-
-          if ($robocopyExitCode -le 7) {
-            Write-Host "API deployment completed successfully."
-            exit 0
-          }
-
-          Write-Error "API deployment failed. Robocopy exit code: $robocopyExitCode"
-          exit $robocopyExitCode
-
-      - name: Deploy UI
-        shell: powershell
-        run: |
-
-          robocopy `
-            "C:\Deploy\ui" `
-            "${{ needs.prepare.outputs.UI_PATH }}" `
-            /E `
-            /XF "server.js" ".env" "web.config"
-
-          $robocopyExitCode = $LASTEXITCODE
-
-          Write-Host "Robocopy Exit Code: $robocopyExitCode"
-
-          if ($robocopyExitCode -le 7) {
-            Write-Host "UI deployment completed successfully."
-            exit 0
-          }
-
-          Write-Error "UI deployment failed. Robocopy exit code: $robocopyExitCode"
-          exit $robocopyExitCode
-
-
-# =========================================================
-# 6. START SERVICES
-# =========================================================
-  start:
-    name: 🟢 Start Services
-    needs: [prepare, deploy]
-    runs-on: [self-hosted, cd, ntis]
-
-    steps:
-
-      - name: Start API Website & AppPool
-        shell: powershell
-        run: |
-
-          Import-Module WebAdministration
-
-          $site = "${{ needs.prepare.outputs.API_SITE }}"
-
-          $siteObject = Get-Website -Name $site -ErrorAction SilentlyContinue
-
-          if (-not $siteObject) {
-            Write-Error "IIS website '$site' does not exist."
-            exit 1
-          }
-
-          $pool = $siteObject.applicationPool
-
-          if (-not $pool) {
-            Write-Error "No Application Pool is assigned to IIS website '$site'."
-            exit 1
-          }
-
-          Write-Host "IIS Site: $site"
-          Write-Host "Application Pool: $pool"
-
-          Start-WebAppPool -Name $pool -ErrorAction Stop
-          Start-Website -Name $site -ErrorAction Stop
-
-          $timeout = 30
-          $elapsed = 0
-
-          do {
-            Start-Sleep -Seconds 2
-            $elapsed += 2
-            $poolState = (Get-WebAppPoolState -Name $pool).Value
-            $siteState = (Get-Website -Name $site).State
-            Write-Host "AppPool: $poolState | Site: $siteState"
-          } while (($poolState -ne "Started" -or $siteState -ne "Started") -and $elapsed -lt $timeout)
-
-          if ($poolState -ne "Started" -or $siteState -ne "Started") {
-            Write-Error "Failed to start IIS Site/AppPool. Site=$siteState AppPool=$poolState"
-            exit 1
-          }
-
-          Write-Host "IIS Site and AppPool started successfully."
-
-
-      - name: Start UI Service
-        shell: powershell
-        run: |
-
-          $svc = "${{ needs.prepare.outputs.UI_SERVICE }}"
-
-          $service = Get-Service `
-            -Name $svc `
-            -ErrorAction SilentlyContinue
-
-          if ($service -and $service.Status -ne "Running") {
-
-            sc start $svc
-          }
+        run: Remove-Item _configs -Recurse -Force -ErrorAction SilentlyContinue

@@ -1,0 +1,4 @@
+# Same file on every branch (per-branch copies would be overwritten by promotion merges and break
+# build-once tree equality). Code-owner review is only *required* on qa, staging and main (rulesets);
+# who may merge each branch is enforced by push restrictions (governance/Set-Governance.ps1).
+*  @SthapatyaConsultants/ntis-qa-leads @SthapatyaConsultants/ntis-tech-leads @SthapatyaConsultants/ntis-release-managers

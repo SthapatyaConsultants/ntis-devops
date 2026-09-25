@@ -1,0 +1,35 @@
+{
+  "$comment": "PR rules from the branching playbook (sec. 2, sec. 3, sec. 4, sec. 5, sec. 6, sec. 8). {T} is replaced by the ticket pattern. Targets not listed here (e.g. feature/*) are not governed.",
+  "ticketPattern": "[A-Z][A-Z0-9]+-\\d+",
+  "ticketExemptHeads": ["^backmerge/"],
+  "targets": [
+    {
+      "base": "^develop$",
+      "sources": ["^feature/{T}-[A-Za-z0-9._-]+$", "^bugfix/{T}-[A-Za-z0-9._-]+$", "^release/\\d+\\.\\d+\\.\\d+$", "^backmerge/"],
+      "mergeHint": "Squash and merge for feature/* and bugfix/*; Create a merge commit for release/* and backmerge/*."
+    },
+    {
+      "base": "^qa$",
+      "sources": ["^develop$", "^backmerge/"],
+      "mergeHint": "Create a merge commit (never squash a promotion)."
+    },
+    {
+      "base": "^staging$",
+      "sources": ["^qa$", "^backmerge/"],
+      "mergeHint": "Create a merge commit (never squash a promotion).",
+      "blockWhileBackmergeOpenInto": "qa"
+    },
+    {
+      "base": "^release/\\d+\\.\\d+\\.\\d+$",
+      "sources": ["^bugfix/{T}-[A-Za-z0-9._-]+$"],
+      "mergeHint": "Squash and merge.",
+      "singleReleaseBranch": true
+    },
+    {
+      "base": "^main$",
+      "sources": ["^staging$", "^release/\\d+\\.\\d+\\.\\d+$", "^hotfix/{T}-[A-Za-z0-9._-]+$"],
+      "mergeHint": "Create a merge commit.",
+      "requireVersion": true
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+# Builds ONE component at ONE commit and stores it by git tree (design §2.6). Idempotent: a tree that is
+# already packaged is never rebuilt or overwritten. Called by deploy-env.yml for every missing tree.
+name: Build component
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: App repo name (ntis-ui | ntis-platform | ntis-database-manager)
+        type: string
+        required: true
+      sha:
+        type: string
+        required: true
+      tree:
+        type: string
+        required: true
+      component:
+        description: ui | platform | dbmanager
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      repo:
+        type: choice
+        options: [ntis-ui, ntis-platform, ntis-database-manager]
+        required: true
+      sha:
+        description: Full commit SHA to build
+        type: string
+        required: true
+      tree:
+        description: Tree SHA of that commit (git rev-parse <sha>^{tree})
+        type: string
+        required: true
+      component:
+        type: choice
+        options: [ui, platform, dbmanager]
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ inputs.component }} ${{ inputs.tree }}
+    runs-on: [self-hosted, "${{ vars.NTIS_RUNNER_BUILD || 'ntis-build' }}"]
+    timeout-minutes: 45
+    concurrency:
+      group: build-${{ inputs.component }}-${{ inputs.tree }}
+      cancel-in-progress: false
+    env:
+      AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.NTIS_STORAGE_CONNECTION_STRING || secrets.PACKAGE_CONNECTION_STRING }}
+      NTIS_PACKAGE_CONTAINER: ${{ vars.NTIS_PACKAGE_CONTAINER || 'ntis-packages' }}
+      NTIS_STATE_CONTAINER: ${{ vars.NTIS_STATE_CONTAINER || 'ntis-state' }}
+    steps:
+      - name: Validate inputs
+        shell: pwsh
+        env:
+          REPO: ${{ inputs.repo }}
+          SHA: ${{ inputs.sha }}
+          TREE: ${{ inputs.tree }}
+        run: |
+          if ($env:REPO -notin @('ntis-ui', 'ntis-platform', 'ntis-database-manager')) { throw "Unknown repo $env:REPO" }
+          if ($env:SHA -notmatch '^[0-9a-f]{40}$' -or $env:TREE -notmatch '^[0-9a-f]{40}$') { throw 'sha and tree must be full 40-char SHAs' }
+
+      - name: Checkout ntis-devops
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          path: _devops
+          clean: true
+
+      - name: Mint ntis-cicd-bot token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CICD_APP_ID }}
+          private-key: ${{ secrets.CICD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.repo }}
+
+      - name: Checkout ${{ inputs.repo }}@${{ inputs.sha }}
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/${{ inputs.repo }}
+          ref: ${{ inputs.sha }}
+          token: ${{ steps.app.outputs.token }}
+          path: _src
+          clean: true
+
+      - name: Verify tree
+        shell: pwsh
+        working-directory: _src
+        env:
+          TREE: ${{ inputs.tree }}
+        run: |
+          $actual = git rev-parse 'HEAD^{tree}'
+          if ($actual -ne $env:TREE) { throw "Checked-out tree $actual does not match requested tree $env:TREE" }
+
+      - name: Build
+        uses: ./_devops/.github/actions/package-build
+        with:
+          component: ${{ inputs.component }}
+          source-dir: ${{ github.workspace }}/_src
+          output-dir: ${{ github.workspace }}/_out
+          commit-sha: ${{ inputs.sha }}
+          node-version: ${{ vars.NTIS_NODE_VERSION || '20.x' }}
+
+      - name: Publish package
+        shell: pwsh
+        env:
+          COMPONENT: ${{ inputs.component }}
+          TREE: ${{ inputs.tree }}
+          SHA: ${{ inputs.sha }}
+          REPO: ${{ github.repository_owner }}/${{ inputs.repo }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ./_devops/scripts/Publish-Package.ps1 -Component $env:COMPONENT -Tree $env:TREE -Sha $env:SHA -Repo $env:REPO -PackageDir '_out' -RunUrl $env:RUN_URL
+
+      - name: Clean workspace
+        if: always()
+        shell: pwsh
+        run: Remove-Item _src, _out -Recurse -Force -ErrorAction SilentlyContinue

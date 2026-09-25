@@ -1,0 +1,194 @@
+# Orchestrator (design §2.7). One run makes an environment match the heads of its branch across
+# ntis-ui / ntis-platform / ntis-database-manager:
+#   resolve -> build missing trees -> promotion gate -> deploy changed components per tenant -> record -> finalize (prod)
+# Triggered by app repos (repository_dispatch "env-branch-updated", sent by app-pipeline.yml) or manually.
+# Runs are serialized per environment; a queued run replaces an older queued one, which is safe because
+# every run re-reads the branch heads when it starts.
+name: Deploy environment
+run-name: >-
+  Deploy ${{ inputs.environment || github.event.client_payload.ref }}
+  ${{ github.event.client_payload.repo && format('({0})', github.event.client_payload.repo) || '(manual)' }}
+
+on:
+  repository_dispatch:
+    types: [env-branch-updated]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to converge
+        type: choice
+        options: [dev, qa, staging, production]
+        required: true
+      dry_run:
+        description: Resolve, build and gate only - do not deploy
+        type: boolean
+        default: false
+      force:
+        description: Do not wait for open promotion PRs
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    deploy-${{ inputs.environment
+      || (github.event.client_payload.ref == 'develop' && 'dev')
+      || (github.event.client_payload.ref == 'main' && 'production')
+      || (startsWith(github.event.client_payload.ref, 'release/') && 'staging')
+      || github.event.client_payload.ref }}
+  cancel-in-progress: false
+
+env:
+  AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.NTIS_STORAGE_CONNECTION_STRING || secrets.PACKAGE_CONNECTION_STRING }}
+  NTIS_PACKAGE_CONTAINER: ${{ vars.NTIS_PACKAGE_CONTAINER || 'ntis-packages' }}
+  NTIS_STATE_CONTAINER: ${{ vars.NTIS_STATE_CONTAINER || 'ntis-state' }}
+
+jobs:
+  resolve:
+    name: resolve
+    runs-on: [self-hosted, "${{ vars.NTIS_RUNNER_BUILD || 'ntis-build' }}"]
+    timeout-minutes: 15
+    outputs:
+      skip: ${{ steps.r.outputs.skip }}
+      environment: ${{ steps.r.outputs.environment }}
+      github_environment: ${{ steps.r.outputs.github_environment }}
+      runner: ${{ steps.r.outputs.runner }}
+      waiting: ${{ steps.r.outputs.waiting }}
+      components: ${{ steps.r.outputs.components }}
+      missing: ${{ steps.r.outputs.missing }}
+      changed: ${{ steps.r.outputs.changed }}
+      tenants: ${{ steps.r.outputs.tenants }}
+      version: ${{ steps.r.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          clean: true
+
+      - name: Mint ntis-cicd-bot token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CICD_APP_ID }}
+          private-key: ${{ secrets.CICD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ntis-ui,ntis-platform,ntis-database-manager,ntis-configs
+
+      - name: Checkout ntis-configs
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ github.repository_owner }}/ntis-configs
+          token: ${{ steps.app.outputs.token }}
+          path: _configs
+
+      - name: Resolve environment
+        id: r
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          NTIS_RUNNER_NONPROD: ${{ vars.NTIS_RUNNER_NONPROD }}
+          NTIS_RUNNER_PROD: ${{ vars.NTIS_RUNNER_PROD }}
+          ENV_INPUT: ${{ inputs.environment }}
+          REF: ${{ github.event.client_payload.ref }}
+          TRIGGER_REPO: ${{ github.event.client_payload.repo }}
+          TRIGGER_SHA: ${{ github.event.client_payload.sha }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          $p = @{ ConfigRoot = '_configs' }
+          if ($env:ENV_INPUT) { $p.EnvironmentKey = $env:ENV_INPUT } else { $p.Ref = $env:REF }
+          if ($env:TRIGGER_REPO) { $p.TriggerRepo = $env:TRIGGER_REPO }
+          if ($env:TRIGGER_SHA) { $p.TriggerSha = $env:TRIGGER_SHA }
+          if ($env:FORCE -eq 'true') { $p.Force = $true }
+          ./scripts/Resolve-Environment.ps1 @p
+
+      - name: Remove config checkout
+        if: always()
+        shell: pwsh
+        run: Remove-Item _configs -Recurse -Force -ErrorAction SilentlyContinue
+
+  build:
+    name: build
+    needs: resolve
+    if: >-
+      needs.resolve.outputs.skip == 'false' && needs.resolve.outputs.waiting == 'false'
+      && needs.resolve.outputs.missing != '[]'
+    strategy:
+      fail-fast: true
+      matrix:
+        item: ${{ fromJSON(needs.resolve.outputs.missing) }}
+    uses: ./.github/workflows/build-component.yml
+    with:
+      repo: ${{ matrix.item.repo }}
+      sha: ${{ matrix.item.sha }}
+      tree: ${{ matrix.item.tree }}
+      component: ${{ matrix.item.component }}
+    secrets: inherit
+
+  gate:
+    name: promotion gate
+    needs: [resolve, build]
+    if: >-
+      always() && needs.resolve.result == 'success'
+      && needs.resolve.outputs.skip == 'false' && needs.resolve.outputs.waiting == 'false'
+      && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: [self-hosted, "${{ vars.NTIS_RUNNER_BUILD || 'ntis-build' }}"]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Evaluate gate
+        shell: pwsh
+        env:
+          ENV_KEY: ${{ needs.resolve.outputs.environment }}
+          COMPONENTS: ${{ needs.resolve.outputs.components }}
+        run: ./scripts/Test-PromotionGate.ps1 -EnvironmentKey $env:ENV_KEY -ComponentsJson $env:COMPONENTS
+
+  deploy:
+    name: deploy
+    needs: [resolve, gate]
+    if: >-
+      always() && needs.gate.result == 'success'
+      && needs.resolve.outputs.changed != '[]' && needs.resolve.outputs.tenants != '[]'
+      && inputs.dry_run != true
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        tenant: ${{ fromJSON(needs.resolve.outputs.tenants) }}
+    uses: ./.github/workflows/deploy-tenant.yml
+    with:
+      environment: ${{ needs.resolve.outputs.environment }}
+      github-environment: ${{ needs.resolve.outputs.github_environment }}
+      runner: ${{ needs.resolve.outputs.runner }}
+      tenant: ${{ matrix.tenant }}
+      components: ${{ needs.resolve.outputs.changed }}
+      version: ${{ needs.resolve.outputs.version }}
+    secrets: inherit
+
+  record:
+    name: record state
+    needs: [resolve, deploy]
+    if: always() && needs.deploy.result == 'success'
+    runs-on: [self-hosted, "${{ vars.NTIS_RUNNER_BUILD || 'ntis-build' }}"]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Save environment state
+        shell: pwsh
+        env:
+          ENV_KEY: ${{ needs.resolve.outputs.environment }}
+          CHANGED: ${{ needs.resolve.outputs.changed }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR: ${{ github.actor }}
+        run: ./scripts/Save-EnvironmentState.ps1 -EnvironmentKey $env:ENV_KEY -ChangedJson $env:CHANGED -Version $env:VERSION -RunUrl $env:RUN_URL -Actor $env:ACTOR
+
+  finalize:
+    name: release finalize
+    needs: [resolve, record]
+    if: always() && needs.record.result == 'success' && needs.resolve.outputs.environment == 'production'
+    uses: ./.github/workflows/release-finalize.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets: inherit

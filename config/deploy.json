@@ -1,0 +1,36 @@
+{
+  "$comment": "Per-component deploy rules used by scripts/NtisDeploy.psm1. 'preserveFiles'/'preserveDirs' are never copied or purged on the server (robocopy /XF /XD with /MIR). Tenants can add more with 'preserveFiles' in tenants.json. 'configFiles' map ntis-configs/tenants/<tenant>/<env>/<from> -> <target root>\\<to>; files missing in ntis-configs keep the copy already on the server.",
+  "backup": {
+    "root": "C:\\Backup",
+    "keep": 10,
+    "excludeDirs": ["Uploads", "uploads", "Logs", "logs"]
+  },
+  "health": { "attempts": 10, "delaySeconds": 6, "timeoutSeconds": 20 },
+  "serviceTimeoutSeconds": 60,
+  "components": {
+    "platform": {
+      "packageFolders": { "api": "api", "worker": "worker" },
+      "preserveFiles": ["appsettings.json", "appsettings.*.json", "web.config"],
+      "preserveDirs": ["Uploads", "uploads", "Logs", "logs"],
+      "configFiles": [
+        { "from": "platform/appsettings.Api.Production.json",    "root": "apiPath",    "to": "appsettings.Production.json" },
+        { "from": "platform/appsettings.Worker.Production.json", "root": "apiPath",    "to": "appsettings.Worker.json" },
+        { "from": "platform/appsettings.Worker.Production.json", "root": "workerPath", "to": "appsettings.Production.json" }
+      ]
+    },
+    "ui": {
+      "$preserveNote": "server.js is preserved to match the current production deploy (cd-dynamic-deploy excluded it). The Next.js standalone server.js embeds next.config; remove it from this list once the servers are confirmed to run the unmodified standalone server.js.",
+      "preserveFiles": [".env", ".env.*", "web.config", "server.js"],
+      "preserveDirs": ["Logs", "logs", "Uploads", "uploads"],
+      "configFiles": [
+        { "from": "ui/.env.production", "root": "uiPath", "to": ".env" },
+        { "from": "ui/web.config",      "root": "uiPath", "to": "web.config" }
+      ]
+    },
+    "dbmanager": {
+      "executable": "DatabaseManager.exe",
+      "arguments": ["U"],
+      "configFrom": "database-manager/appsettings.json"
+    }
+  }
+}

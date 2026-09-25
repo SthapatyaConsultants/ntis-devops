@@ -1,0 +1,30 @@
+# Weekday 09:00 IST: keeps one "Stale back-merge PRs" issue listing back-merges open 2+ working days (playbook §5).
+name: Back-merge reminder
+
+on:
+  schedule:
+    - cron: '30 3 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remind:
+    runs-on: ${{ fromJSON(vars.NTIS_POLICY_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Mint ntis-cicd-bot token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CICD_APP_ID }}
+          private-key: ${{ secrets.CICD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ntis-ui,ntis-platform,ntis-database-manager,ntis-devops
+      - name: Check back-merges
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: ./scripts/Get-StaleBackmerges.ps1

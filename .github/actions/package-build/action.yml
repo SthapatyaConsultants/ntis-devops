@@ -1,0 +1,123 @@
+name: NTIS package build
+description: >-
+  Builds one NTIS component from a checked-out app repo into a deployable folder. Environment-neutral:
+  no branch/env map and no typed version - the package is identified by its git tree (design sec. 2.6).
+  Replaces the per-repo copies of .github/actions/package-build (F12).
+
+inputs:
+  component:
+    description: ui | platform | dbmanager
+    required: true
+  source-dir:
+    description: Folder containing the checked-out app repo.
+    required: true
+  output-dir:
+    description: Folder that receives the deployable content (zipped later by Publish-Package.ps1).
+    required: true
+  commit-sha:
+    description: Commit being built (stamped into the build).
+    required: true
+  node-version:
+    description: Node.js version for the UI build. Must match the Node runtime on the servers.
+    required: false
+    default: '20.x'
+  dotnet-version:
+    description: .NET SDK version.
+    required: false
+    default: '10.0.x'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate component
+      shell: pwsh
+      env:
+        COMPONENT: ${{ inputs.component }}
+      run: |
+        if ($env:COMPONENT -notin @('ui', 'platform', 'dbmanager')) { throw "Unknown component '$env:COMPONENT'" }
+
+    - name: Setup Node.js
+      if: inputs.component == 'ui'
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Setup .NET
+      if: inputs.component != 'ui'
+      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    # ---------------------------------------------------------------- UI
+    - name: Build UI (Next.js standalone)
+      if: inputs.component == 'ui'
+      shell: pwsh
+      working-directory: ${{ inputs.source-dir }}
+      env:
+        NEXT_PUBLIC_APP_VERSION: ${{ inputs.commit-sha }}
+        OUT: ${{ inputs.output-dir }}
+        SHA: ${{ inputs.commit-sha }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (Test-Path 'package-lock.json') { npm ci } else { npm install }
+        if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+        $env:NEXT_PUBLIC_APP_VERSION = $env:SHA.Substring(0, 12)
+        npm run build:production
+        if ($LASTEXITCODE -ne 0) { throw 'next build failed' }
+        if (-not (Test-Path '.next/standalone/server.js')) { throw 'Standalone output missing - next.config must set output: "standalone" for production builds.' }
+
+        New-Item -ItemType Directory -Path $env:OUT -Force | Out-Null
+        Copy-Item -Path '.next/standalone/*' -Destination $env:OUT -Recurse -Force
+        New-Item -ItemType Directory -Path (Join-Path $env:OUT '.next') -Force | Out-Null
+        Copy-Item -Path '.next/static' -Destination (Join-Path $env:OUT '.next/static') -Recurse -Force
+        if (Test-Path 'public') { Copy-Item -Path 'public' -Destination (Join-Path $env:OUT 'public') -Recurse -Force }
+        if ((Test-Path 'src/i18n/locales') -and -not (Test-Path (Join-Path $env:OUT 'src/i18n/locales'))) {
+          New-Item -ItemType Directory -Path (Join-Path $env:OUT 'src/i18n') -Force | Out-Null
+          Copy-Item -Path 'src/i18n/locales' -Destination (Join-Path $env:OUT 'src/i18n/locales') -Recurse -Force
+        }
+        # Same start contract as the previous package: `npm start` -> node server.js
+        @{ name = 'ntis-ui'; version = '0.0.0'; private = $true; scripts = @{ start = 'node server.js' } } |
+          ConvertTo-Json | Set-Content -Path (Join-Path $env:OUT 'package.json') -Encoding UTF8
+        Write-Host "UI package assembled: $((Get-ChildItem $env:OUT -Recurse -File | Measure-Object).Count) files"
+
+    # ---------------------------------------------------------- Platform
+    - name: Build Platform (API + Worker)
+      if: inputs.component == 'platform'
+      shell: pwsh
+      working-directory: ${{ inputs.source-dir }}
+      env:
+        OUT: ${{ inputs.output-dir }}
+        SHA: ${{ inputs.commit-sha }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (-not (Test-Path 'NtisPlatform.sln')) { throw 'NtisPlatform.sln not found' }
+        Get-ChildItem -Path . -Include bin, obj -Directory -Recurse -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        dotnet restore NtisPlatform.sln
+        if ($LASTEXITCODE -ne 0) { throw 'restore failed' }
+        $common = @('--configuration', 'Release', '--runtime', 'win-x64', '--self-contained', 'false', "-p:SourceRevisionId=$env:SHA")
+        dotnet publish src/Presentation/NtisPlatform.Api/NtisPlatform.Api.csproj @common --output (Join-Path $env:OUT 'api')
+        if ($LASTEXITCODE -ne 0) { throw 'API publish failed' }
+        dotnet publish src/Presentation/NtisPlatform.Worker/NtisPlatform.Worker.csproj @common --output (Join-Path $env:OUT 'worker')
+        if ($LASTEXITCODE -ne 0) { throw 'Worker publish failed' }
+        foreach ($dll in @('api/NtisPlatform.Api.dll', 'worker/NtisPlatform.Worker.dll')) {
+          if (-not (Test-Path (Join-Path $env:OUT $dll))) { throw "$dll missing from publish output" }
+        }
+
+    # --------------------------------------------------------- DB manager
+    - name: Build Database Manager
+      if: inputs.component == 'dbmanager'
+      shell: pwsh
+      working-directory: ${{ inputs.source-dir }}/src
+      env:
+        OUT: ${{ inputs.output-dir }}
+        SHA: ${{ inputs.commit-sha }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        dotnet restore
+        if ($LASTEXITCODE -ne 0) { throw 'restore failed' }
+        dotnet build --configuration Release --no-restore "-p:SourceRevisionId=$env:SHA"
+        if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+        $bin = 'bin/Release/net10.0'
+        if (-not (Get-ChildItem $bin -Recurse -Filter 'DatabaseManager.exe' -File)) { throw "DatabaseManager.exe not found under $bin" }
+        New-Item -ItemType Directory -Path $env:OUT -Force | Out-Null
+        Copy-Item -Path "$bin/*" -Destination $env:OUT -Recurse -Force
